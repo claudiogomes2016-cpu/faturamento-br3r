@@ -5721,7 +5721,8 @@ function gkReadForm(){
   if(!r.uf) err.push('escolha a UF da placa');
   if(!r.tipo) err.push('escolha o tipo de veículo');
   if(r.tipo&&gkIsBitrem(r.tipo)&&!r.bau2) err.push(r.tipo+' é bitrem: falta a placa do baú 2');
-  if(r.tipo&&!gkIsBitrem(r.tipo)&&r.bau2) err.push(r.tipo+' não é bitrem, mas há placa do baú 2');
+  /* aviso (não bloqueia): o conferente confirma */
+  r.avisos=[]; if(r.tipo&&!gkIsBitrem(r.tipo)&&r.bau2) r.avisos.push(r.tipo+' não é bitrem, mas há placa do baú 2 ('+r.bau2+')');
   if(!r.motorista) err.push('falta o nome do motorista');
   if(r.cpf&&r.cpf.length!==11) err.push('CPF deve ter 11 dígitos');
   r.origem=(gkLast&&gkLast.origem)||'GK';
@@ -5746,6 +5747,12 @@ function gkEdit(i){
   gkEditIdx=i; gkSetAddLabel();
   $('gkParseMsg').textContent='Editando o documento '+(r.doc||'')+' — altere os campos e clique em "Salvar alteração".';
   $('secGK').scrollIntoView({behavior:'smooth',block:'start'});
+}
+function gkConfirmaAvisos(r){
+  if(!r.avisos||!r.avisos.length) return true;
+  const ok=confirm('Atenção:\n\n- '+r.avisos.join('\n- ')+'\n\nOK = continuar assim mesmo\nCancelar = voltar e corrigir');
+  if(!ok) $('gkParseMsg').textContent='Corrija: '+r.avisos.join('; ')+' (troque o tipo para S3/S6 ou apague a placa do baú 2).';
+  return ok;
 }
 function gkRenderTable(){
   const list=gkLoadList();
@@ -5801,6 +5808,8 @@ function gkInit(){
     if($('gkFields').style.display==='none'&&!parse()){ $('gkParseMsg').textContent='Cole os dados do GK ou do e-mail do AG antes de adicionar.'; return; }
     const {r,err}=gkReadForm();
     if(err.length){ $('gkParseMsg').textContent='Corrija antes de '+(gkEditIdx==null?'adicionar':'salvar')+': '+err.join('; ')+'.'; return; }
+    if(!gkConfirmaAvisos(r)) return;
+    delete r.avisos;
     const list=gkLoadList();
     if(gkEditIdx!=null&&list[gkEditIdx]){
       list[gkEditIdx]=Object.assign({},list[gkEditIdx],r);
@@ -5832,6 +5841,7 @@ function gkInit(){
   $('btnGkSap').onclick=()=>{
     const {r,err}=gkReadForm(); const e2=err.filter(x=>!/documento de transporte/.test(x));
     if(e2.length){ $('gkParseMsg').textContent='Corrija antes de enviar ao SAP: '+e2.join('; ')+'.'; return; }
+    if(!gkConfirmaAvisos(r)) return;
     const b=$('btnGkSap'); b.disabled=true; setTimeout(()=>{b.disabled=false;},6000);
     /* portaria */
     const id=('portaria_'+r.cavalo+'_'+Date.now().toString(36)).replace(/[^A-Za-z0-9_-]/g,'');
