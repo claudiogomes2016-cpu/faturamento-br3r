@@ -2861,9 +2861,9 @@ MsgBox final, vbInformation + vbSystemModal, TITULO
     }
     return {ok:true,code:VV.replace(/\r?\n/g,'\r\n'),problems:[]};
   },
-  RUNNER_VERSAO:20,
+  RUNNER_VERSAO:21,
   DADOS_VERSAO:14,
-  PORTARIA_VERSAO:19,
+  PORTARIA_VERSAO:21,
   EXPEDICAO_VERSAO:18,
   localName(origem){const o=String(origem||''); if(/AG/i.test(o))return 'NSA'; if(/0707/.test(o))return 'TRANSF. 0700'; return 'BALL';},
   handlerMain(BS){ return `' ------------------------------- FaturamentoSAP (atalho br3r://) -------------------------------
@@ -3646,8 +3646,11 @@ Sub Entrada26(linha)
     End If
     Etapa "dar entrada na linha " & linha & " (" & desc & ")"
     Cel26 g, linha, "STATUS"
-    g.currentCellColumn = "STATUS"
+    ' o botao Entrada usa a linha do CURSOR: posiciona o cursor e a selecao na linha do veiculo
+    g.setCurrentCell linha, "STATUS"
     g.selectedRows = CStr(linha)
+    If g.CurrentCellRow <> linha Then Err.Raise vbObjectError + 609, "Portaria", "Nao consegui posicionar o cursor na linha " & linha & " (ficou na " & g.CurrentCellRow & "). Entrada NAO foi dada."
+    Registrar "      Cursor na linha " & g.CurrentCellRow
     session.findById("wnd[0]/tbar[1]/btn[13]").press
     If Existe("wnd[1]/usr/btnOK") Then
         Registrar "      Confirmacao da entrada: " & session.findById("wnd[1]").Text
@@ -3658,11 +3661,38 @@ Sub Entrada26(linha)
         session.findById("wnd[1]/tbar[0]/btn[0]").press
     End If
     SemPopup "dar entrada"
-    Registrar "      ENTRADA DADA: " & desc
+    Registrar "      Entrada clicada: " & desc
 End Sub
 
+' Foto da grade: chave = todas as colunas menos o status (placas, motorista...) -> status.
+Function Foto26()
+    Dim g, cols, d, r, k, key
+    Set d = CreateObject("Scripting.Dictionary")
+    Set g = session.findById(P_G26)
+    cols = TodasColunas26(g)
+    For r = 0 To g.RowCount - 1
+        key = ""
+        For k = 0 To UBound(cols)
+            If UCase(cols(k)) <> "STATUS" Then key = key & "|" & Cel26(g, r, cols(k))
+        Next
+        If Not d.Exists(key) Then d.Add key, Cel26(g, r, "STATUS")
+    Next
+    Set Foto26 = d
+End Function
+
+Function ChaveLinha26(linha)
+    Dim g, cols, k, key
+    Set g = session.findById(P_G26)
+    cols = TodasColunas26(g)
+    key = ""
+    For k = 0 To UBound(cols)
+        If UCase(cols(k)) <> "STATUS" Then key = key & "|" & Cel26(g, linha, cols(k))
+    Next
+    ChaveLinha26 = key
+End Function
+
 Function PortariaPassos()
-    Dim achou, como, linha, r, g, txt, ls, i, cadastrou, depois
+    Dim achou, como, linha, r, g, txt, ls, i, cadastrou, depois, chave, fotoAntes, fotoDepois, outros, kk, stDepois
     cadastrou = False
     ovAtual = "(portaria " & PV("CAVALO") & ")"
     Abrir26
@@ -3694,8 +3724,25 @@ Function PortariaPassos()
         linha = Aguardando26(achou, como)
         If linha < 0 Then Err.Raise vbObjectError + 608, "Portaria", "Cadastrei o veiculo, mas nao o encontrei AGUARDANDO CHAMADA na ZTTM0026 (busca por " & como & ", linhas [" & achou & "]). Confira no SAP e de a entrada manualmente; mande o log para ajuste."
     End If
+    chave = ChaveLinha26(linha)
+    Set fotoAntes = Foto26()
     Entrada26 linha
     Abrir26
+    Set fotoDepois = Foto26()
+    ' confere: o NOSSO veiculo saiu de AGUARDANDO CHAMADA e nenhum outro mudou de status
+    outros = ""
+    For Each kk In fotoAntes.Keys
+        If kk <> chave And fotoDepois.Exists(kk) Then
+            If fotoDepois(kk) <> fotoAntes(kk) Then outros = outros & "  - " & Replace(Mid(kk, 2), "|", " / ") & ": " & fotoAntes(kk) & " -> " & fotoDepois(kk) & vbCrLf
+        End If
+    Next
+    If outros <> "" Then Registrar "    ATENCAO - outros veiculos mudaram de status: " & Replace(outros, vbCrLf, " ")
+    stDepois = "(nao encontrado)"
+    If fotoDepois.Exists(chave) Then stDepois = fotoDepois(chave)
+    Registrar "    Status do veiculo depois da entrada: " & stDepois
+    If InStr(UCase(stDepois), ST_AGUARDANDO) > 0 Then
+        Err.Raise vbObjectError + 610, "Portaria", "Cliquei em Entrada, mas o veiculo CONTINUA 'AGUARDANDO CHAMADA'. A entrada NAO foi dada para ele." & IIf26(outros <> "", vbCrLf & "ATENCAO - estes veiculos mudaram de status (confira no SAP):" & vbCrLf & outros, "")
+    End If
     achou = Buscar26(como)
     depois = ""
     If achou <> "" Then
@@ -3710,6 +3757,7 @@ Function PortariaPassos()
     Else
         PortariaPassos = "Veiculo ja estava cadastrado: ENTRADA dada na ZTTM0026." & vbCrLf & vbCrLf & "Situacao agora:" & vbCrLf & depois
     End If
+    If outros <> "" Then PortariaPassos = PortariaPassos & vbCrLf & "ATENCAO - outros veiculos mudaram de status ao mesmo tempo (confira no SAP):" & vbCrLf & outros
 End Function
 
 Sub ProcessarPortaria()
@@ -3773,8 +3821,10 @@ Function Transporte03()
         End If
     Next
     If Transporte03 >= 0 Then
-        g.currentCellColumn = "TKNUM"
+        ' os botoes usam a linha do CURSOR: posiciona cursor e selecao na linha do transporte
+        g.setCurrentCell Transporte03, "TKNUM"
         g.selectedRows = CStr(Transporte03)
+        If g.CurrentCellRow <> Transporte03 Then Err.Raise vbObjectError + 628, "Expedicao", "Nao consegui posicionar o cursor na linha do transporte " & PV("DOC") & "."
     End If
 End Function
 
@@ -5135,7 +5185,7 @@ function doPrepare(){
    Um clique: o painel abre br3r://run?d=<dados da carga>; o FaturamentoSAP.vbs (instalado uma vez
    com dois cliques) recebe os dados, mostra o resumo para confirmar e roda no SAP. */
 const SapDirect={
-  ctx:null, RUNNER_VERSAO:20,
+  ctx:null, RUNNER_VERSAO:21,
   b64url(t){return btoa(unescape(encodeURIComponent(t))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');},
   async update(){
     const _u=$('btnUpd'); if(_u){_u.disabled=true;setTimeout(()=>{_u.disabled=false;},6000);}
