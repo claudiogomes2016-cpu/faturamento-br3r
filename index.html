@@ -2861,9 +2861,9 @@ MsgBox final, vbInformation + vbSystemModal, TITULO
     }
     return {ok:true,code:VV.replace(/\r?\n/g,'\r\n'),problems:[]};
   },
-  RUNNER_VERSAO:18,
+  RUNNER_VERSAO:19,
   DADOS_VERSAO:14,
-  PORTARIA_VERSAO:17,
+  PORTARIA_VERSAO:19,
   EXPEDICAO_VERSAO:18,
   localName(origem){const o=String(origem||''); if(/AG/i.test(o))return 'NSA'; if(/0707/.test(o))return 'TRANSF. 0700'; return 'BALL';},
   handlerMain(BS){ return `' ------------------------------- FaturamentoSAP (atalho br3r://) -------------------------------
@@ -3382,6 +3382,27 @@ Function Colunas26(g, txt)
     Colunas26 = Split(r, ";")
 End Function
 
+' Todas as colunas da grade (nomes tecnicos) e, no log, os titulos - para diagnostico.
+Function TodasColunas26(g)
+    Dim cols, i, r, nm, tt, lg
+    r = ""
+    lg = ""
+    On Error Resume Next
+    Set cols = g.ColumnOrder
+    For i = 0 To cols.Count - 1
+        nm = cols.Item(i)
+        tt = ""
+        tt = g.GetDisplayedColumnTitle(nm)
+        r = r & nm & ";"
+        lg = lg & nm & "=" & tt & " "
+    Next
+    Err.Clear
+    On Error GoTo 0
+    Registrar "      Colunas da grade: " & lg
+    If r <> "" Then r = Left(r, Len(r) - 1)
+    TodasColunas26 = Split(r, ";")
+End Function
+
 Function PlacasDaLinha(g, r, cP)
     Dim k, v, s
     s = ""
@@ -3446,6 +3467,12 @@ Function Buscar26(ByRef como)
     n = g.RowCount
     cP = Colunas26(g, "PLACA")
     cM = Colunas26(g, "MOTORISTA")
+    ' sem titulos de coluna (algumas versoes do SAP GUI): procura em todas as colunas
+    If UBound(cP) < 0 Or UBound(cM) < 0 Then
+        Registrar "      Colunas por titulo: placa [" & Join(cP, ",") & "] motorista [" & Join(cM, ",") & "] - usando todas as colunas"
+        If UBound(cP) < 0 Then cP = TodasColunas26(g)
+        If UBound(cM) < 0 Then cM = TodasColunas26(g)
+    End If
     alvo = SoAlnum(PV("CAVALO"), False)
     achou = ""
     como = "placa do cavalo " & PV("CAVALO")
@@ -3461,7 +3488,12 @@ Function Buscar26(ByRef como)
     If achou = "" And UBound(cM) >= 0 And PV("MOTORISTA") <> "" Then
         como = "nome do motorista " & PV("MOTORISTA") & " (a placa do cavalo nao foi encontrada)"
         For r = 0 To n - 1
-            If MesmoNome(Cel26(g, r, cM(0)), PV("MOTORISTA")) Then achou = achou & r & ";"
+            For k = 0 To UBound(cM)
+                If MesmoNome(Cel26(g, r, cM(k)), PV("MOTORISTA")) Then
+                    achou = achou & r & ";"
+                    Exit For
+                End If
+            Next
         Next
     End If
     If achou <> "" Then achou = Left(achou, Len(achou) - 1)
@@ -3639,7 +3671,7 @@ Function PortariaPassos()
         Abrir26
         achou = Buscar26(como)
         linha = Aguardando26(achou, como)
-        If linha < 0 Then Err.Raise vbObjectError + 608, "Portaria", "Cadastrei o veiculo, mas nao o encontrei AGUARDANDO CHAMADA na ZTTM0026. Confira no SAP e de a entrada manualmente."
+        If linha < 0 Then Err.Raise vbObjectError + 608, "Portaria", "Cadastrei o veiculo, mas nao o encontrei AGUARDANDO CHAMADA na ZTTM0026 (busca por " & como & ", linhas [" & achou & "]). Confira no SAP e de a entrada manualmente; mande o log para ajuste."
     End If
     Entrada26 linha
     Abrir26
@@ -5080,7 +5112,7 @@ function doPrepare(){
    Um clique: o painel abre br3r://run?d=<dados da carga>; o FaturamentoSAP.vbs (instalado uma vez
    com dois cliques) recebe os dados, mostra o resumo para confirmar e roda no SAP. */
 const SapDirect={
-  ctx:null, RUNNER_VERSAO:18,
+  ctx:null, RUNNER_VERSAO:19,
   b64url(t){return btoa(unescape(encodeURIComponent(t))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');},
   async update(){
     const _u=$('btnUpd'); if(_u){_u.disabled=true;setTimeout(()=>{_u.disabled=false;},6000);}
