@@ -619,6 +619,7 @@ td .badge:has(.lgo){padding:3px 11px;font-size:14px;font-weight:700;border:1px s
       <button class="btn btn-clear" id="btnGkParse">Processar dados</button>
       <button class="btn" id="btnGkAdd">+ Adicionar à lista</button>
       <button class="btn" id="btnGkCancel" type="button" style="display:none">Cancelar edição</button>
+      <button class="btn green" id="btnGkSap" type="button" style="display:none" title="Procura o veículo na ZTTM0026 (placa do cavalo ou motorista); se não estiver cadastrado, cadastra; depois dá ENTRADA">🚚 Portaria SAP (ZTTM0026)</button>
       <button class="btn danger" id="btnGkClearForm" type="button" style="display:none" title="Descarta o que foi colado (texto ou print) e limpa os campos">✕ Limpar</button>
       <button class="btn" id="btnGkShot" type="button" title="Escolher a imagem do print do e-mail do AG">Anexar print (AG)</button>
       <input type="file" id="gkShotFile" accept="image/*" hidden>
@@ -2856,14 +2857,17 @@ MsgBox final, vbInformation + vbSystemModal, TITULO
     }
     return {ok:true,code:VV.replace(/\r?\n/g,'\r\n'),problems:[]};
   },
-  RUNNER_VERSAO:14,
+  RUNNER_VERSAO:15,
   DADOS_VERSAO:14,
+  PORTARIA_VERSAO:15,
   localName(origem){const o=String(origem||''); if(/AG/i.test(o))return 'NSA'; if(/0707/.test(o))return 'TRANSF. 0700'; return 'BALL';},
   handlerMain(BS){ return `' ------------------------------- FaturamentoSAP (atalho br3r://) -------------------------------
 ' Um clique em ENVIAR AO SAP no painel abre este script com os dados da carga.
 ' Sem argumentos (dois cliques no arquivo): instala o atalho br3r:// para este usuario do Windows.
 Const RUNNER_VERSAO = ${this.RUNNER_VERSAO}
 Dim baseDir, pEntrada, pProc, pFeito, pLogs, pStatus, idCarga, wsh, arqEnt, arg, pp, texto, tGuard, corteGuard, quandoOutra, rr
+Dim ACAO, PORT
+Set PORT = CreateObject("Scripting.Dictionary")
 
 Sub GarantirPasta(p)
     If Not fso.FolderExists(p) Then fso.CreateFolder p
@@ -2911,6 +2915,8 @@ Sub CarregarDados(caminho)
     Set dR = CreateObject("Scripting.Dictionary")
     Set dE = CreateObject("Scripting.Dictionary")
     Set dL = CreateObject("Scripting.Dictionary")
+    ACAO = ""
+    PORT.RemoveAll
     MODO_CONFERENCIA = True
     CRIAR_DOC_TRANSPORTE = False
     VEICULO = ""
@@ -2930,6 +2936,8 @@ Sub CarregarDados(caminho)
             p = Split(linha, "|")
             If p(0) = "H" And UBound(p) >= 2 Then
                 If p(1) = "VERSAO" Then verArq = CInt(p(2))
+                If p(1) = "ACAO" Then ACAO = p(2)
+                If Left(p(1), 2) = "P_" Then PORT(Mid(p(1), 3)) = p(2)
                 If p(1) = "MODO_CONFERENCIA" Then MODO_CONFERENCIA = (p(2) = "1")
                 If p(1) = "CRIAR_DOC" Then CRIAR_DOC_TRANSPORTE = (p(2) = "1")
                 If p(1) = "VEICULO" Then VEICULO = p(2)
@@ -2959,6 +2967,11 @@ Sub CarregarDados(caminho)
     ts.Close
     If temAtual Then FecharRemessa dR, dE, dL, atual
     If verArq > RUNNER_VERSAO Then Err.Raise vbObjectError + 532, "FaturamentoSAP", "O painel e mais novo que o FaturamentoSAP instalado neste computador. Baixe o instalador de novo no painel e de dois cliques nele."
+    If ACAO = "PORTARIA" Then
+        If Not fim Then Err.Raise vbObjectError + 533, "FaturamentoSAP", "Dados da portaria incompletos (sem a linha FIM)."
+        If PV("CAVALO") = "" Then Err.Raise vbObjectError + 537, "FaturamentoSAP", "Dados da portaria sem a placa do cavalo."
+        Exit Sub
+    End If
     If Not fim Then Err.Raise vbObjectError + 533, "FaturamentoSAP", "Dados da carga incompletos (sem a linha FIM)."
     If dR.Count = 0 Then Err.Raise vbObjectError + 534, "FaturamentoSAP", "Dados da carga sem remessas."
     If VEICULO = "" Or TRANSPORTADORA = "" Then Err.Raise vbObjectError + 535, "FaturamentoSAP", "Dados da carga sem veiculo ou transportadora."
@@ -3261,6 +3274,353 @@ Sub ProcessarCarga()
     MsgBox final, vbInformation + vbSystemModal, TITULO
 End Sub
 
+' ------------------------------- PORTARIA: ZTTM0026 (cadastro + entrada do veiculo) -------------------------------
+' Base: gravacao do SAP GUI Scripting (ZTTM0026 -> Cadastrar -> OK -> filtro SIGNI -> Entrada -> OK).
+' 1) procura o veiculo pela placa do cavalo (qualquer coluna de placa) e, se nao achar, pelo nome do motorista;
+' 2) nao achou: cadastra com os dados do painel; 3) da ENTRADA na linha com status AGUARDANDO CHAMADA.
+Const P_G26 = "wnd[0]/usr/cntlGRID1/shellcont/shell"
+Const P_F4LIN3 = "wnd[2]/usr/sub/1[0,0]/sub/1/2[0,0]/sub/1/2/3[0,3]/lbl[12,3]"
+Const ST_AGUARDANDO = "AGUARDANDO CHAMADA"
+Dim DIAS26
+
+Function PV(k)
+    PV = ""
+    If PORT.Exists(k) Then PV = Trim(PORT(k))
+End Function
+
+' Somente letras e numeros, maiusculas, sem acento (para comparar placas e nomes vindos do SAP).
+Function SoAlnum(t, manterEspaco)
+    Dim i, ch, a, r
+    r = ""
+    t = UCase(CStr(t))
+    For i = 1 To Len(t)
+        ch = Mid(t, i, 1)
+        a = AscW(ch)
+        If a = 193 Or a = 192 Or a = 194 Or a = 195 Or a = 196 Then ch = "A"
+        If a = 201 Or a = 200 Or a = 202 Or a = 203 Then ch = "E"
+        If a = 205 Or a = 204 Or a = 206 Or a = 207 Then ch = "I"
+        If a = 211 Or a = 210 Or a = 212 Or a = 213 Or a = 214 Then ch = "O"
+        If a = 218 Or a = 217 Or a = 219 Or a = 220 Then ch = "U"
+        If a = 199 Then ch = "C"
+        If (ch >= "A" And ch <= "Z") Or (ch >= "0" And ch <= "9") Then
+            r = r & ch
+        ElseIf manterEspaco And ch = " " And Right(r, 1) <> " " And r <> "" Then
+            r = r & " "
+        End If
+    Next
+    SoAlnum = Trim(r)
+End Function
+
+Function Existe(id)
+    Dim o
+    Existe = False
+    On Error Resume Next
+    Set o = session.findById(id, False)
+    If Err.Number = 0 Then
+        If Not (o Is Nothing) Then Existe = True
+    End If
+    Err.Clear
+    On Error GoTo 0
+End Function
+
+Function TextoDe(id)
+    TextoDe = ""
+    On Error Resume Next
+    TextoDe = Trim(session.findById(id).Text)
+    Err.Clear
+    On Error GoTo 0
+End Function
+
+' Valor de uma celula da grade (rola a grade ate a linha, senao o SAP pode devolver vazio).
+Function Cel26(g, r, col)
+    Dim v
+    v = ""
+    On Error Resume Next
+    If r < g.FirstVisibleRow Or r >= g.FirstVisibleRow + g.VisibleRowCount Then g.FirstVisibleRow = r
+    v = CStr(g.GetCellValue(r, col))
+    Err.Clear
+    On Error GoTo 0
+    Cel26 = Trim(v)
+End Function
+
+' Nomes tecnicos das colunas cujo titulo (ou nome) contem o texto.
+Function Colunas26(g, txt)
+    Dim cols, i, nm, tt, r
+    r = ""
+    On Error Resume Next
+    Set cols = g.ColumnOrder
+    For i = 0 To cols.Count - 1
+        nm = cols.Item(i)
+        tt = ""
+        tt = UCase(g.GetDisplayedColumnTitle(nm))
+        If InStr(tt, txt) > 0 Or InStr(UCase(nm), txt) > 0 Then r = r & nm & ";"
+    Next
+    Err.Clear
+    On Error GoTo 0
+    If r <> "" Then r = Left(r, Len(r) - 1)
+    Colunas26 = Split(r, ";")
+End Function
+
+Function PlacasDaLinha(g, r, cP)
+    Dim k, v, s
+    s = ""
+    For k = 0 To UBound(cP)
+        v = Cel26(g, r, cP(k))
+        If v <> "" Then s = s & v & " / "
+    Next
+    If s <> "" Then s = Left(s, Len(s) - 3)
+    PlacasDaLinha = s
+End Function
+
+Function Desc26(g, r)
+    Dim cM, mot
+    cM = Colunas26(g, "MOTORISTA")
+    mot = ""
+    If UBound(cM) >= 0 Then mot = Cel26(g, r, cM(0))
+    Desc26 = "placas " & PlacasDaLinha(g, r, Colunas26(g, "PLACA")) & " | motorista " & mot & " | status " & Cel26(g, r, "STATUS")
+End Function
+
+' Mesmo motorista: nomes iguais, ou um comeca com o outro (GK as vezes corta o nome) com pelo menos 2 palavras.
+Function MesmoNome(a, b)
+    Dim x, y, t
+    x = SoAlnum(a, True)
+    y = SoAlnum(b, True)
+    MesmoNome = False
+    If x = "" Or y = "" Then Exit Function
+    If Len(x) > Len(y) Then
+        t = x
+        x = y
+        y = t
+    End If
+    If x = y Then MesmoNome = True
+    If InStr(x, " ") > 0 And Len(x) >= 8 And Left(y, Len(x)) = x Then MesmoNome = True
+End Function
+
+Sub Abrir26()
+    Etapa "abrir ZTTM0026"
+    session.findById("wnd[0]/tbar[0]/okcd").text = "/NZTTM0026"
+    session.findById("wnd[0]").sendVKey 0
+    Etapa "selecao: local " & PV("LOCAL") & ", data a partir de " & DataSAP(Date - DIAS26)
+    session.findById("wnd[0]/usr/ctxtP_TPLST").text = PV("LOCAL")
+    session.findById("wnd[0]/usr/ctxtS_DATA-LOW").text = DataSAP(Date - DIAS26)
+    session.findById("wnd[0]/tbar[1]/btn[8]").press
+    SemPopup "executar ZTTM0026"
+    If Not Existe(P_G26) Then Err.Raise vbObjectError + 601, "Portaria", "A ZTTM0026 nao mostrou a lista de veiculos (" & TextoDe("wnd[0]/sbar") & ")."
+End Sub
+
+' Linhas da grade com o veiculo: primeiro pela placa do cavalo; se nao achar, pelo motorista.
+' Devolve os numeros das linhas separados por ";" (vazio = nao achou) e, em "como", o criterio usado.
+Function Buscar26(ByRef como)
+    Dim g, n, r, k, cP, cM, alvo, v, achou
+    Set g = session.findById(P_G26)
+    n = g.RowCount
+    cP = Colunas26(g, "PLACA")
+    cM = Colunas26(g, "MOTORISTA")
+    alvo = SoAlnum(PV("CAVALO"), False)
+    achou = ""
+    como = "placa do cavalo " & PV("CAVALO")
+    For r = 0 To n - 1
+        For k = 0 To UBound(cP)
+            v = SoAlnum(Cel26(g, r, cP(k)), False)
+            If alvo <> "" And Len(v) >= 7 And Right(v, 7) = alvo Then
+                achou = achou & r & ";"
+                Exit For
+            End If
+        Next
+    Next
+    If achou = "" And UBound(cM) >= 0 And PV("MOTORISTA") <> "" Then
+        como = "nome do motorista " & PV("MOTORISTA") & " (a placa do cavalo nao foi encontrada)"
+        For r = 0 To n - 1
+            If MesmoNome(Cel26(g, r, cM(0)), PV("MOTORISTA")) Then achou = achou & r & ";"
+        Next
+    End If
+    If achou <> "" Then achou = Left(achou, Len(achou) - 1)
+    Registrar "    Busca na ZTTM0026 (" & n & " linhas) por " & como & ": linhas [" & achou & "]"
+    Buscar26 = achou
+End Function
+
+' Entre as linhas achadas, a que esta AGUARDANDO CHAMADA. Mais de uma: pergunta qual. Nenhuma: devolve -1.
+Function Aguardando26(achou, como)
+    Dim g, ls, i, lst, cand, txt, s
+    Set g = session.findById(P_G26)
+    Aguardando26 = -1
+    If achou = "" Then Exit Function
+    ls = Split(achou, ";")
+    cand = ""
+    txt = ""
+    For i = 0 To UBound(ls)
+        If InStr(UCase(Cel26(g, CLng(ls(i)), "STATUS")), ST_AGUARDANDO) > 0 Then
+            cand = cand & ls(i) & ";"
+            txt = txt & "  " & ls(i) & ") " & Desc26(g, CLng(ls(i))) & vbCrLf
+        End If
+    Next
+    If cand = "" Then Exit Function
+    lst = Split(Left(cand, Len(cand) - 1), ";")
+    If UBound(lst) = 0 Then
+        Aguardando26 = CLng(lst(0))
+        Exit Function
+    End If
+    s = InputBox("Achei mais de um veiculo AGUARDANDO CHAMADA por " & como & ":" & vbCrLf & vbCrLf & txt & vbCrLf & "Digite o numero da linha em que devo dar ENTRADA (vazio = parar):", TITULO)
+    s = Trim(s)
+    If s = "" Then Err.Raise vbObjectError + 602, "Portaria", "Parado pelo operador: mais de um veiculo AGUARDANDO CHAMADA."
+    If InStr(";" & Join(lst, ";") & ";", ";" & s & ";") = 0 Then Err.Raise vbObjectError + 603, "Portaria", "Linha " & s & " nao esta entre as opcoes."
+    Aguardando26 = CLng(s)
+End Function
+
+Sub Cadastrar26()
+    Dim foco, escolha, r, msg
+    Etapa "cadastrar veiculo (botao Cadastrar)"
+    session.findById("wnd[0]/tbar[1]/btn[7]").press
+    If Not Existe("wnd[1]/usr/txtLECI_TRA_DYN-VEHICLE_REG_NUMB") And Existe("wnd[1]/tbar[0]/btn[0]") Then
+        Registrar "      Janela antes do cadastro: " & session.findById("wnd[1]").Text
+        session.findById("wnd[1]/tbar[0]/btn[0]").press
+    End If
+    foco = ""
+    On Error Resume Next
+    foco = session.ActiveWindow.GuiFocus.Id
+    Err.Clear
+    On Error GoTo 0
+    Etapa "primeiro campo do cadastro (lista F4, 3a opcao - igual a gravacao)"
+    session.findById("wnd[1]").sendVKey 4
+    escolha = ""
+    If Existe(P_F4LIN3) Then
+        escolha = TextoDe(P_F4LIN3)
+        session.findById(P_F4LIN3).setFocus
+        session.findById("wnd[2]").sendVKey 2
+    End If
+    Registrar "      Campo com F4: " & foco & " -> escolhido: " & escolha
+    If Not Existe("wnd[1]/usr/txtLECI_TRA_DYN-VEHICLE_REG_NUMB") Then Err.Raise vbObjectError + 604, "Portaria", "A janela de cadastro da ZTTM0026 nao abriu como na gravacao."
+    Etapa "preencher cadastro"
+    session.findById("wnd[1]/usr/txtLECI_TRA_DYN-VEHICLE_REG_NUMB").text = PV("CAVALO")
+    session.findById("wnd[1]/usr/txtLECI_TRA_DYN-TRAILER_REG_NUMB").text = PV("CARRETA1")
+    session.findById("wnd[1]/usr/txtLECI_TRA_DYN-CONT_REG_NUMB1").text = PV("CARRETA2")
+    session.findById("wnd[1]/usr/ctxtVTTK-VSART").text = PV("TIPO")
+    session.findById("wnd[1]/usr/ctxtT005S-BLAND").text = PV("UF")
+    session.findById("wnd[1]/usr/txtLECI_EVENT_DATA-NAME_CONTACT").text = PV("TRANSP")
+    session.findById("wnd[1]/usr/txtLECI_TRA_DYN-FST_NAME_DRVR").text = PV("MOTORISTA")
+    session.findById("wnd[1]/usr/txtLECI_TRA_DYN-ID_CARD_NUMB").text = PV("CPF")
+    session.findById("wnd[1]/usr/txtLECI_EVENT_DATA-PHONE").text = PV("DESTINO")
+    If MODO_CONFERENCIA Then
+        r = MsgBox("Confira o CADASTRO preenchido na janela do SAP:" & vbCrLf & vbCrLf & "Cavalo " & PV("CAVALO") & " / Carreta 1 " & PV("CARRETA1") & " / Carreta 2 " & PV("CARRETA2") & vbCrLf & "Tipo " & PV("TIPO") & " | UF " & PV("UF") & vbCrLf & "Transportadora " & PV("TRANSP") & vbCrLf & "Motorista " & PV("MOTORISTA") & " | CPF " & PV("CPF") & vbCrLf & "Destino " & PV("DESTINO") & vbCrLf & "Primeiro campo (F4): " & escolha & vbCrLf & vbCrLf & "SIM = gravar o cadastro (OK)" & vbCrLf & "NAO = parar (a janela fica aberta no SAP para voce fechar)", vbYesNo + vbQuestion + vbSystemModal, TITULO)
+        If r <> vbYes Then Err.Raise vbObjectError + 605, "Portaria", "Cancelado pelo operador antes de gravar o cadastro."
+    End If
+    Etapa "gravar cadastro (OK)"
+    session.findById("wnd[1]/usr/btnOK").press
+    If Existe("wnd[2]/tbar[0]/btn[0]") Then
+        Registrar "      Mensagem apos o cadastro: " & session.findById("wnd[2]").Text
+        session.findById("wnd[2]/tbar[0]/btn[0]").press
+    End If
+    If Existe("wnd[1]/usr/txtLECI_TRA_DYN-VEHICLE_REG_NUMB") Then
+        msg = TextoDe("wnd[0]/sbar")
+        Err.Raise vbObjectError + 606, "Portaria", "O SAP nao aceitou o cadastro (a janela continua aberta): " & msg
+    End If
+    SemPopup "gravar cadastro"
+    Registrar "      CADASTRADO: " & PV("CAVALO") & " - " & PV("MOTORISTA")
+End Sub
+
+Sub Entrada26(linha)
+    Dim g, r, desc
+    Set g = session.findById(P_G26)
+    desc = Desc26(g, linha)
+    If MODO_CONFERENCIA Then
+        r = MsgBox("Dar ENTRADA (liberar para a expedicao) neste veiculo da ZTTM0026?" & vbCrLf & vbCrLf & desc, vbYesNo + vbQuestion + vbSystemModal, TITULO)
+        If r <> vbYes Then Err.Raise vbObjectError + 607, "Portaria", "Cancelado pelo operador antes de dar entrada."
+    End If
+    Etapa "dar entrada na linha " & linha & " (" & desc & ")"
+    Cel26 g, linha, "STATUS"
+    g.currentCellColumn = "STATUS"
+    g.selectedRows = CStr(linha)
+    session.findById("wnd[0]/tbar[1]/btn[13]").press
+    If Existe("wnd[1]/usr/btnOK") Then
+        Registrar "      Confirmacao da entrada: " & session.findById("wnd[1]").Text
+        session.findById("wnd[1]/usr/btnOK").press
+    End If
+    If Existe("wnd[1]/tbar[0]/btn[0]") Then
+        Registrar "      Mensagem apos a entrada: " & session.findById("wnd[1]").Text
+        session.findById("wnd[1]/tbar[0]/btn[0]").press
+    End If
+    SemPopup "dar entrada"
+    Registrar "      ENTRADA DADA: " & desc
+End Sub
+
+Function PortariaPassos()
+    Dim achou, como, linha, r, g, txt, ls, i, cadastrou, depois
+    cadastrou = False
+    ovAtual = "(portaria " & PV("CAVALO") & ")"
+    Abrir26
+    achou = Buscar26(como)
+    linha = Aguardando26(achou, como)
+    If linha >= 0 And Left(como, 4) = "nome" Then
+        Set g = session.findById(P_G26)
+        r = MsgBox("Nao achei a placa " & PV("CAVALO") & ", mas achei o motorista AGUARDANDO CHAMADA:" & vbCrLf & vbCrLf & Desc26(g, linha) & vbCrLf & vbCrLf & "SIM = e este veiculo, dar ENTRADA nele" & vbCrLf & "NAO = cadastrar o veiculo do painel", vbYesNo + vbQuestion + vbSystemModal, TITULO)
+        If r <> vbYes Then linha = -1
+    ElseIf linha < 0 And achou <> "" Then
+        Set g = session.findById(P_G26)
+        ls = Split(achou, ";")
+        txt = ""
+        For i = 0 To UBound(ls)
+            txt = txt & "  - " & Desc26(g, CLng(ls(i))) & vbCrLf
+        Next
+        r = MsgBox("O veiculo ja esta na ZTTM0026, mas NAO esta AGUARDANDO CHAMADA:" & vbCrLf & vbCrLf & txt & vbCrLf & "SIM = e uma nova viagem: cadastrar de novo e dar ENTRADA" & vbCrLf & "NAO = parar sem mexer em nada", vbYesNo + vbQuestion + vbSystemModal, TITULO)
+        If r <> vbYes Then
+            Registrar "    Parado pelo operador: veiculo ja cadastrado com outro status."
+            PortariaPassos = "Nada foi feito: o veiculo ja esta na ZTTM0026 com outro status." & vbCrLf & vbCrLf & txt
+            Exit Function
+        End If
+    End If
+    If linha < 0 Then
+        Cadastrar26
+        cadastrou = True
+        Abrir26
+        achou = Buscar26(como)
+        linha = Aguardando26(achou, como)
+        If linha < 0 Then Err.Raise vbObjectError + 608, "Portaria", "Cadastrei o veiculo, mas nao o encontrei AGUARDANDO CHAMADA na ZTTM0026. Confira no SAP e de a entrada manualmente."
+    End If
+    Entrada26 linha
+    Abrir26
+    achou = Buscar26(como)
+    depois = ""
+    If achou <> "" Then
+        Set g = session.findById(P_G26)
+        ls = Split(achou, ";")
+        For i = 0 To UBound(ls)
+            depois = depois & "  - " & Desc26(g, CLng(ls(i))) & vbCrLf
+        Next
+    End If
+    If cadastrou Then
+        PortariaPassos = "Veiculo CADASTRADO e ENTRADA dada na ZTTM0026." & vbCrLf & vbCrLf & "Situacao agora:" & vbCrLf & depois
+    Else
+        PortariaPassos = "Veiculo ja estava cadastrado: ENTRADA dada na ZTTM0026." & vbCrLf & vbCrLf & "Situacao agora:" & vbCrLf & depois
+    End If
+End Function
+
+Sub ProcessarPortaria()
+    Dim r, resumo, final
+    DIAS26 = 3
+    If IsNumeric(PV("DIAS")) Then DIAS26 = CInt(PV("DIAS"))
+    resumo = "Cavalo: " & PV("CAVALO") & vbCrLf & "Carreta 1: " & PV("CARRETA1") & vbCrLf & "Carreta 2: " & PV("CARRETA2") & vbCrLf & "UF: " & PV("UF") & "   Tipo: " & PV("TIPO") & vbCrLf & "Transportadora: " & PV("TRANSP") & vbCrLf & "Motorista: " & PV("MOTORISTA") & "   CPF: " & PV("CPF") & vbCrLf & "Destino: " & PV("DESTINO")
+    Registrar "Portaria ZTTM0026 - " & Replace(resumo, vbCrLf, " | ")
+    r = MsgBox("PORTARIA - ZTTM0026" & vbCrLf & vbCrLf & resumo & vbCrLf & vbCrLf & "Vou procurar o veiculo na ZTTM0026 (placa do cavalo; se nao achar, nome do motorista):" & vbCrLf & "- NAO cadastrado: cadastro com estes dados e dou ENTRADA;" & vbCrLf & "- ja cadastrado (AGUARDANDO CHAMADA): so dou ENTRADA." & vbCrLf & vbCrLf & "O SAP precisa estar aberto e logado. Continuar?", vbYesNo + vbQuestion + vbSystemModal, TITULO)
+    If r <> vbYes Then
+        Registrar "Cancelado pelo operador antes de iniciar."
+        Exit Sub
+    End If
+    On Error Resume Next
+    Conectar
+    If Err.Number <> 0 Then
+        Abortar "Nao foi possivel conectar ao SAP GUI. Abra o SAP, faca login e habilite o Scripting. Detalhe: " & Err.Description
+        Exit Sub
+    End If
+    final = PortariaPassos()
+    If Err.Number <> 0 Then
+        Abortar "Portaria interrompida na etapa '" & etapaAtual & "': " & Err.Description
+        Exit Sub
+    End If
+    On Error GoTo 0
+    Registrar "Fim - " & Replace(final, vbCrLf, " | ")
+    MsgBox final, vbInformation + vbSystemModal, TITULO
+End Sub
+
 Sub ProcessarArquivo(arqCarga)
     Dim dest, nomeArq, ok, msgErr
     nomeArq = fso.GetFileName(arqCarga)
@@ -3291,7 +3651,13 @@ Sub ProcessarArquivo(arqCarga)
         ok = False
     End If
     On Error GoTo 0
-    If ok Then ProcessarCarga
+    If ok Then
+        If ACAO = "PORTARIA" Then
+            ProcessarPortaria
+        Else
+            ProcessarCarga
+        End If
+    End If
     On Error Resume Next
     logFile.Close
     If fso.FileExists(pFeito & "${BS}" & nomeArq) Then fso.DeleteFile pFeito & "${BS}" & nomeArq, True
@@ -3374,6 +3740,17 @@ ProcessarArquivo arqEnt
 `; },
   /* FaturamentoSAP.vbs (instalador + executor do atalho br3r://) */
   buildHandler(cfg){ return this.build({veiculo:{codigo:''},transportadora:{codigo:''},ordens:[]},cfg,{handler:true}); },
+  /* Dados da portaria (ZTTM0026): cadastro + entrada do veículo — lidos pelo FaturamentoSAP (ACAO=PORTARIA) */
+  buildPortaria(v,cfg,opts){
+    opts=opts||{};
+    const c=x=>String(x==null?'':x).normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^\x20-\x7E]/g,'?').replace(/[|\r\n]/g,'/').trim().toUpperCase();
+    const sp=((cfg.sap&&cfg.sap.shippingPoints)||['BR3R']).filter(Boolean);
+    const L=['H|VERSAO|'+this.PORTARIA_VERSAO,'H|ACAO|PORTARIA','H|ID|'+c(opts.id||''),'H|MODO_CONFERENCIA|'+(opts.conferencia!==false?'1':'0'),
+      'H|P_LOCAL|'+c(sp[0]||'BR3R'),'H|P_DIAS|'+(opts.dias||3),
+      'H|P_CAVALO|'+c(v.cavalo),'H|P_CARRETA1|'+c(v.bau1),'H|P_CARRETA2|'+c(v.bau2),'H|P_UF|'+c(v.uf),'H|P_TIPO|'+c(v.tipo),
+      'H|P_TRANSP|'+c(v.transportadora),'H|P_MOTORISTA|'+c(v.motorista),'H|P_CPF|'+c(v.cpf),'H|P_DESTINO|'+c(v.cliente),'FIM'];
+    return L.join('\r\n')+'\r\n';
+  },
   /* Arquivo de dados da carga (o que o painel grava na pasta 'entrada') */
   buildData(payload,cfg,opts){
     opts=opts||{}; const problems=this.check(payload,opts); if(problems.length) return {ok:false,problems};
@@ -4410,7 +4787,7 @@ function doPrepare(){
    Um clique: o painel abre br3r://run?d=<dados da carga>; o FaturamentoSAP.vbs (instalado uma vez
    com dois cliques) recebe os dados, mostra o resumo para confirmar e roda no SAP. */
 const SapDirect={
-  ctx:null, RUNNER_VERSAO:14,
+  ctx:null, RUNNER_VERSAO:15,
   b64url(t){return btoa(unescape(encodeURIComponent(t))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');},
   async update(){
     const _u=$('btnUpd'); if(_u){_u.disabled=true;setTimeout(()=>{_u.disabled=false;},6000);}
@@ -5002,6 +5379,7 @@ function gkRenderFields(d){
   $('gkFields').style.display='flex';
   $('btnGkAdd').classList.add('green');
   $('btnGkClearForm').style.display='';
+  $('btnGkSap').style.display='';
   gkLast=d;
   $('gkCavalo').value=d.placas[0]||'';
   $('gkBau1').value=d.placas[1]||'';
@@ -5043,7 +5421,7 @@ function gkSetAddLabel(){ const b=$('btnGkAdd'); b.textContent=gkEditIdx==null?'
 function gkResetForm(msg){
   $('gkDoc').value=''; $('gkPaste').value=''; $('gkFields').style.display='none'; $('gkShot').style.display='none';
   ['gkCavalo','gkBau1','gkBau2','gkUf','gkTipo','gkTransp','gkMotorista','gkCpf','gkCliente'].forEach(id=>{ $(id).value=''; });
-  $('btnGkAdd').classList.remove('green'); $('btnGkClearForm').style.display='none'; gkLast=null; gkEditIdx=null; gkSetAddLabel();
+  $('btnGkAdd').classList.remove('green'); $('btnGkClearForm').style.display='none'; $('btnGkSap').style.display='none'; gkLast=null; gkEditIdx=null; gkSetAddLabel();
   if(msg!=null) $('gkParseMsg').textContent=msg;
 }
 function gkEdit(i){
@@ -5121,6 +5499,20 @@ function gkInit(){
     gkSaveList(list); gkResetForm('Adicionado à lista.'); gkRenderTable();
   };
   $('btnGkCancel').onclick=()=>{ gkResetForm('Edição cancelada.'); gkRenderTable(); };
+  /* Portaria: manda os dados ao FaturamentoSAP (atalho br3r://) — ZTTM0026: busca, cadastro se faltar, entrada. */
+  $('btnGkSap').onclick=()=>{
+    const {r,err}=gkReadForm(); const e2=err.filter(x=>!/documento de transporte/.test(x));
+    if(e2.length){ $('gkParseMsg').textContent='Corrija antes de enviar ao SAP: '+e2.join('; ')+'.'; return; }
+    const b=$('btnGkSap'); b.disabled=true; setTimeout(()=>{b.disabled=false;},6000);
+    const id=('portaria_'+r.cavalo+'_'+Date.now().toString(36)).replace(/[^A-Za-z0-9_-]/g,'');
+    const txt=SapScript.buildPortaria(r,S.cfg,{id});
+    const url='br3r://run?d='+SapDirect.b64url(txt);
+    if(url.length<=1900) SapDirect.open(url);
+    else { download(id+'.dat',txt,'text/plain'); setTimeout(()=>SapDirect.open('br3r://run?f='+encodeURIComponent(id+'.dat')),1500); }
+    $('gkParseMsg').innerHTML='<b>Enviado ao SAP.</b> Confirme o pop-up <b>“Faturamento BR3R”</b> (o SAP precisa estar aberto). '
+      +'Se aparecer <b>“O painel é mais novo que o FaturamentoSAP instalado”</b> ou nada acontecer, <a href="#" id="gkInst">baixe o instalador</a> e dê dois cliques nele (uma vez).';
+    const a=$('gkInst'); if(a) a.onclick=e=>{ e.preventDefault(); SapDirect.install(); $('gkParseMsg').textContent='Instalador baixado: dê dois cliques em FaturamentoSAP.vbs (pasta Downloads) e depois clique de novo em Portaria SAP.'; };
+  };
   /* Descartar o que foi colado (texto ou print). Em edição, só limpa a colagem e mantém o lançamento. */
   const descartar=()=>{ if(gkEditIdx!=null){ $('gkPaste').value=''; $('gkShot').style.display='none'; $('gkParseMsg').textContent='Print descartado — o lançamento em edição continua; corrija os campos ou cancele a edição.'; return; }
     const doc=$('gkDoc').value; gkResetForm('Descartado. Cole outro print ou os dados novamente.'); $('gkDoc').value=doc; };
