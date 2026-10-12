@@ -5451,7 +5451,8 @@ function gkRenderFields(d){
   $('btnGkClearForm').style.display='';
   $('btnGkSap').style.display='';
   gkLast=d;
-  $('gkFinal').value=(d.finalidade||'C').toUpperCase();
+  /* AG (e-mail ou print) é sempre Coleta = C; no GK vem na 1a linha */
+  $('gkFinal').value=d.origem&&d.origem!=='GK'?'C':(d.finalidade||'C').toUpperCase();
   $('gkCavalo').value=d.placas[0]||'';
   $('gkBau1').value=d.placas[1]||'';
   $('gkBau2').value=d.placas[2]||'';
