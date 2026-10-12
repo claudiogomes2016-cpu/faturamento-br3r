@@ -618,16 +618,20 @@ td .badge:has(.lgo){padding:3px 11px;font-size:14px;font-weight:700;border:1px s
     </div>
 
     <div class="gkFields" id="gkFields" style="display:none">
-      <div class="fld"><label>Placas</label><input id="gkPlacas" readonly></div>
-      <div class="fld"><label>Transportadora</label><input id="gkTransp" readonly></div>
-      <div class="fld"><label>Motorista</label><input id="gkMotorista" readonly></div>
-      <div class="fld"><label>CPF</label><input id="gkCpf" readonly></div>
-      <div class="fld"><label>Cliente</label><input id="gkCliente" readonly></div>
+      <div class="fld"><label>Placa do cavalo</label><input id="gkCavalo" autocomplete="off"></div>
+      <div class="fld"><label>Placa baú 1</label><input id="gkBau1" autocomplete="off"></div>
+      <div class="fld"><label>Placa baú 2 (bitrem)</label><input id="gkBau2" autocomplete="off"></div>
+      <div class="fld" style="flex:0 1 110px"><label>UF da placa *</label><select id="gkUf"></select></div>
+      <div class="fld" style="flex:0 1 200px"><label>Tipo de veículo *</label><select id="gkTipo"></select></div>
+      <div class="fld"><label>Transportadora</label><input id="gkTransp" autocomplete="off"></div>
+      <div class="fld"><label>Motorista</label><input id="gkMotorista" autocomplete="off"></div>
+      <div class="fld"><label>CPF</label><input id="gkCpf" autocomplete="off"></div>
+      <div class="fld"><label>Destino (cliente)</label><input id="gkCliente" autocomplete="off"></div>
     </div>
 
     <div class="gkListWrap">
       <table class="ov gkTable" id="gkTable">
-        <thead><tr><th>Documento</th><th>Placas</th><th>Transportadora</th><th>Motorista</th><th>CPF</th><th>Cliente</th><th class="nos"></th></tr></thead>
+        <thead><tr><th>Documento</th><th>Placas</th><th>UF</th><th>Tipo</th><th>Transportadora</th><th>Motorista</th><th>CPF</th><th>Destino</th><th class="nos"></th></tr></thead>
         <tbody id="gkTableBody"></tbody>
       </table>
       <div class="gkEmpty" id="gkEmpty">Nenhum registro adicionado ainda.</div>
@@ -4714,13 +4718,23 @@ async function importBackup(f){if(!f)return;const o=JSON.parse(await f.text());
 
 /* ===== Documento de transporte + dados do GK ===== */
 const GK_KEY='br3r-gk-list';
+const GK_UFS=['AC','AL','AP','AM','BA','CE','DF','ES','GO','MA','MT','MS','MG','PA','PB','PR','PE','PI','RJ','RN','RS','RO','RR','SC','SP','SE','TO'];
 function gkLoadList(){ try{ return JSON.parse(localStorage.getItem(GK_KEY)||'[]'); }catch(e){ return []; } }
 function gkSaveList(list){ try{ localStorage.setItem(GK_KEY, JSON.stringify(list)); }catch(e){} }
+/* Placa no padrão antigo (ABC1234) ou Mercosul (ABC1D23). Aceita UF na frente ("SP LUG4J12", "RJ-ABC1234"). */
+function gkPlaca(txt){
+  const t=String(txt||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+  const m=t.match(/^([A-Z]{2})?([A-Z]{3}[0-9][A-Z0-9][0-9]{2})$/);
+  if(!m) return null;
+  return {placa:m[2], uf:(m[1]&&GK_UFS.indexOf(m[1])>=0)?m[1]:''};
+}
+/* Bitrem = veículo com regra de 2 baús (BAU_SPLIT) ou descrição "BiTrem". */
+function gkIsBitrem(code){ if(!code) return false; const v=vehInfo(code); return !!BAU_SPLIT[v.cap]||/BITREM/i.test(v.desc); }
 /* Divide o texto colado em blocos separados por linha(s) em branco:
-   bloco 1 = placas (2 para carreta, 3 para bitrem, etc.)
+   bloco 1 = placas na ordem cavalo, baú 1, baú 2 (2 para carreta, 3 para bitrem)
    bloco 2 = transportadora
    bloco 3 = motorista + CPF
-   bloco 4 = cliente */
+   bloco 4 = cliente (destino) */
 function gkParseBlock(raw){
   const lines=String(raw||'').replace(/\r/g,'').split('\n');
   const groups=[]; let cur=[];
@@ -4729,27 +4743,73 @@ function gkParseBlock(raw){
     else { cur.push(l.trim()); }
   });
   if(cur.length) groups.push(cur);
+  const placas=[]; let uf='';
+  (groups[0]||[]).forEach(l=>{ const p=gkPlaca(l); if(p){ placas.push(p.placa); if(!uf&&p.uf) uf=p.uf; } else if(!uf&&GK_UFS.indexOf(l.toUpperCase())>=0){ uf=l.toUpperCase(); } });
+  const g3=groups[2]||[];
+  const cpfLine=g3.find(l=>/^\D*\d{3}\.?\d{3}\.?\d{3}-?\d{2}\D*$/.test(l))||'';
   return {
-    placas: groups[0]||[],
+    placas, uf,
     transportadora: (groups[1]||[])[0]||'',
-    motorista: (groups[2]||[])[0]||'',
-    cpf: (groups[2]||[])[1]||'',
+    motorista: g3.find(l=>l!==cpfLine)||'',
+    cpf: cpfLine.replace(/\D/g,''),
     cliente: (groups[3]||[])[0]||''
   };
 }
+/* Tipo sugerido: o veículo escolhido na montagem da carga, se combinar com o nº de placas;
+   carreta (2 placas) -> Z9; bitrem (3 placas) fica para o conferente escolher (S3 ou S6). */
+function gkSuggestTipo(nPlacas){
+  const want3=nPlacas>=3;
+  if(S.vehicle&&gkIsBitrem(S.vehicle)===want3) return S.vehicle;
+  return want3?'':'Z9';
+}
+function gkFillSelects(){
+  $('gkUf').innerHTML='<option value="">—</option>'+GK_UFS.map(u=>'<option>'+u+'</option>').join('');
+  const fav=(S.cfg.favVehicles||[]).filter(c=>S.cfg.vehicles.some(v=>v.code===c));
+  const rest=S.cfg.vehicles.filter(v=>v.cap>0&&fav.indexOf(v.code)<0).map(v=>v.code);
+  const o=c=>{ const v=vehInfo(c); return '<option value="'+esc(c)+'">'+esc(c+(v.desc?' — '+v.desc:'')+(v.cap?' ('+v.cap+' pal)':''))+'</option>'; };
+  $('gkTipo').innerHTML='<option value="">— escolha —</option>'+fav.map(o).join('')+(rest.length?'<option disabled>──────────</option>'+rest.map(o).join(''):'');
+}
 function gkRenderFields(d){
   $('gkFields').style.display='flex';
-  $('gkPlacas').value=d.placas.join(' / ');
+  $('gkCavalo').value=d.placas[0]||'';
+  $('gkBau1').value=d.placas[1]||'';
+  $('gkBau2').value=d.placas[2]||'';
+  $('gkUf').value=d.uf||'';
+  $('gkTipo').value=gkSuggestTipo(d.placas.length);
   $('gkTransp').value=d.transportadora;
   $('gkMotorista').value=d.motorista;
   $('gkCpf').value=d.cpf;
   $('gkCliente').value=d.cliente;
 }
+/* Lê os campos (editáveis) e confere o que o script do SAP vai precisar. */
+function gkReadForm(){
+  const up=id=>($(id).value||'').trim().toUpperCase();
+  const r={
+    doc:($('gkDoc').value||'').replace(/\D/g,''),
+    cavalo:up('gkCavalo').replace(/[^A-Z0-9]/g,''), bau1:up('gkBau1').replace(/[^A-Z0-9]/g,''), bau2:up('gkBau2').replace(/[^A-Z0-9]/g,''),
+    uf:$('gkUf').value, tipo:$('gkTipo').value,
+    transportadora:up('gkTransp'), motorista:up('gkMotorista'), cpf:($('gkCpf').value||'').replace(/\D/g,''), cliente:up('gkCliente')
+  };
+  if(r.doc) r.doc=r.doc.padStart(10,'0');
+  const err=[];
+  if(!r.doc) err.push('informe o documento de transporte');
+  if(!gkPlaca(r.cavalo)) err.push('placa do cavalo inválida');
+  if(r.bau1&&!gkPlaca(r.bau1)) err.push('placa do baú 1 inválida');
+  if(r.bau2&&!gkPlaca(r.bau2)) err.push('placa do baú 2 inválida');
+  if(!r.uf) err.push('escolha a UF da placa');
+  if(!r.tipo) err.push('escolha o tipo de veículo');
+  if(r.tipo&&gkIsBitrem(r.tipo)&&!r.bau2) err.push(r.tipo+' é bitrem: falta a placa do baú 2');
+  if(r.tipo&&!gkIsBitrem(r.tipo)&&r.bau2) err.push(r.tipo+' não é bitrem, mas há placa do baú 2');
+  if(!r.motorista) err.push('falta o nome do motorista');
+  if(r.cpf&&r.cpf.length!==11) err.push('CPF deve ter 11 dígitos');
+  r.placas=[r.cavalo,r.bau1,r.bau2].filter(Boolean).join(' / ');
+  return {r,err};
+}
 function gkRenderTable(){
   const list=gkLoadList();
   const tb=$('gkTableBody'); if(!tb) return;
   tb.innerHTML=list.map((r,i)=>'<tr>'
-    +'<td>'+esc(r.doc||'')+'</td><td>'+esc(r.placas||'')+'</td><td>'+esc(r.transportadora||'')+'</td>'
+    +'<td>'+esc(r.doc||'')+'</td><td>'+esc(r.placas||'')+'</td><td>'+esc(r.uf||'')+'</td><td>'+esc(r.tipo||'')+'</td><td>'+esc(r.transportadora||'')+'</td>'
     +'<td>'+esc(r.motorista||'')+'</td><td>'+esc(r.cpf||'')+'</td><td>'+esc(r.cliente||'')+'</td>'
     +'<td><button type="button" class="gkDel" data-i="'+i+'" title="Remover">✕</button></td></tr>').join('');
   $('gkEmpty').style.display = list.length ? 'none' : 'block';
@@ -4760,38 +4820,36 @@ function gkRenderTable(){
 }
 function gkInit(){
   if(!$('btnGkParse')) return;
-  let lastParsed=null;
-  $('btnGkParse').onclick=()=>{
+  gkFillSelects();
+  const parse=()=>{
     const raw=$('gkPaste').value||'';
-    if(!raw.trim()){ $('gkParseMsg').textContent='Cole os dados do GK antes de processar.'; return; }
-    lastParsed=gkParseBlock(raw);
-    gkRenderFields(lastParsed);
-    $('gkParseMsg').textContent='Dados reconhecidos — confira os campos e clique em "Adicionar à lista".';
+    if(!raw.trim()) return false;
+    const d=gkParseBlock(raw);
+    gkRenderFields(d);
+    const falta=[];
+    if(!d.placas.length) falta.push('nenhuma placa reconhecida');
+    if(!d.uf) falta.push('escolha a UF');
+    if(!$('gkTipo').value) falta.push('escolha o tipo de veículo');
+    $('gkParseMsg').textContent='Dados reconhecidos ('+d.placas.length+' placa'+(d.placas.length===1?'':'s')+')'+(falta.length?' — '+falta.join(', '):'')+'. Confira os campos e clique em "Adicionar à lista".';
+    return true;
   };
+  $('btnGkParse').onclick=()=>{ if(!parse()) $('gkParseMsg').textContent='Cole os dados do GK antes de processar.'; };
   $('btnGkAdd').onclick=()=>{
-    const doc=($('gkDoc').value||'').trim();
-    if(!lastParsed){
-      const raw=$('gkPaste').value||'';
-      if(raw.trim()){ lastParsed=gkParseBlock(raw); gkRenderFields(lastParsed); }
-    }
-    if(!doc && !lastParsed){ $('gkParseMsg').textContent='Informe o documento de transporte e/ou cole os dados do GK.'; return; }
+    if($('gkFields').style.display==='none'&&!parse()){ $('gkParseMsg').textContent='Cole os dados do GK antes de adicionar.'; return; }
+    const {r,err}=gkReadForm();
+    if(err.length){ $('gkParseMsg').textContent='Corrija antes de adicionar: '+err.join('; ')+'.'; return; }
     const list=gkLoadList();
-    list.push({
-      doc,
-      placas:(lastParsed&&lastParsed.placas||[]).join(' / '),
-      transportadora:(lastParsed&&lastParsed.transportadora)||'',
-      motorista:(lastParsed&&lastParsed.motorista)||'',
-      cpf:(lastParsed&&lastParsed.cpf)||'',
-      cliente:(lastParsed&&lastParsed.cliente)||''
-    });
+    if(list.some(x=>x.doc===r.doc)&&!confirm('O documento '+r.doc+' já está na lista. Adicionar de novo?')) return;
+    list.push(r);
     gkSaveList(list); gkRenderTable();
     $('gkDoc').value=''; $('gkPaste').value=''; $('gkFields').style.display='none';
-    lastParsed=null; $('gkParseMsg').textContent='Adicionado à lista.';
+    $('gkParseMsg').textContent='Adicionado à lista.';
   };
   $('btnGkCopy').onclick=()=>{
     const list=gkLoadList();
-    const head=['Documento','Placas','Transportadora','Motorista','CPF','Cliente'].join('\t');
-    const rows=list.map(r=>[r.doc,r.placas,r.transportadora,r.motorista,r.cpf,r.cliente].join('\t'));
+    const head=['Documento','Placa cavalo','Placa baú 1','Placa baú 2','UF','Tipo','Transportadora','Motorista','CPF','Destino'].join('\t');
+    const rows=list.map(r=>{ const p=r.cavalo!=null?[r.cavalo,r.bau1,r.bau2]:String(r.placas||'').split(' / ');
+      return [r.doc,p[0]||'',p[1]||'',p[2]||'',r.uf||'',r.tipo||'',r.transportadora,r.motorista,r.cpf,r.cliente].join('\t'); });
     const text=[head].concat(rows).join('\n');
     if(navigator.clipboard && navigator.clipboard.writeText){
       navigator.clipboard.writeText(text).then(()=>{
