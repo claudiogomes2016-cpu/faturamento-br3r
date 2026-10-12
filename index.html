@@ -456,7 +456,9 @@ pre.json{background:#0c0d10;color:#cdd0da;padding:14px;border-radius:var(--rc);o
 .gkOps{white-space:nowrap;text-align:right}
 .gkOps .btn{margin-left:6px}
 .gkActions{display:flex;gap:10px}
-.gkShot{border:1px solid var(--line);border-radius:var(--rc);padding:8px;background:var(--paper-2);max-height:260px;overflow:auto}
+.gkShot{border:1px solid var(--line);border-radius:var(--rc);padding:8px;background:var(--paper-2);max-height:320px;overflow:auto;flex-direction:column;gap:8px}
+.gkShotBar{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.gkShotHint{color:var(--muted);font-size:13px;flex:1 1 200px}
 .gkShot img{max-width:100%;height:auto;display:block}
 
 /* ===== Botões rápidos de tipo de veículo (atalho para os mais carregados) ===== */
@@ -617,12 +619,18 @@ td .badge:has(.lgo){padding:3px 11px;font-size:14px;font-weight:700;border:1px s
       <button class="btn btn-clear" id="btnGkParse">Processar dados</button>
       <button class="btn" id="btnGkAdd">+ Adicionar à lista</button>
       <button class="btn" id="btnGkCancel" type="button" style="display:none">Cancelar edição</button>
+      <button class="btn danger" id="btnGkClearForm" type="button" style="display:none" title="Descarta o que foi colado (texto ou print) e limpa os campos">✕ Limpar</button>
       <button class="btn" id="btnGkShot" type="button" title="Escolher a imagem do print do e-mail do AG">Anexar print (AG)</button>
       <input type="file" id="gkShotFile" accept="image/*" hidden>
       <span class="gkParseMsg" id="gkParseMsg"></span>
     </div>
 
-    <div class="gkShot" id="gkShot" style="display:none"><img id="gkShotImg" alt="Print do e-mail do AG"></div>
+    <div class="gkShot" id="gkShot" style="display:none">
+      <div class="gkShotBar"><b>Print colado</b><span class="gkShotHint">Leu errado? Corrija os campos abaixo à mão, troque o print ou exclua.</span>
+        <button type="button" class="btn sm" id="btnGkShotSwap">↻ Trocar print</button>
+        <button type="button" class="btn sm danger" id="btnGkShotDel">✕ Excluir print</button></div>
+      <img id="gkShotImg" alt="Print do e-mail do AG">
+    </div>
     <div class="gkFields" id="gkFields" style="display:none">
       <div class="fld"><label>Placa do cavalo</label><input id="gkCavalo" autocomplete="off"></div>
       <div class="fld"><label>Placa baú 1</label><input id="gkBau1" autocomplete="off"></div>
@@ -4880,7 +4888,7 @@ function gkPrepImage(file){
 }
 async function gkOcr(file, onDone){
   const url=URL.createObjectURL(file);
-  $('gkShotImg').src=url; $('gkShot').style.display='flex';
+  $('gkShotImg').src=url; $('gkShot').style.display='flex'; $('btnGkClearForm').style.display='';
   $('gkParseMsg').textContent='Lendo o print… (pode levar alguns segundos; na primeira vez baixa o leitor)';
   try{
     const T=await gkLoadOcr();
@@ -4924,6 +4932,7 @@ let gkLast=null;
 function gkRenderFields(d){
   $('gkFields').style.display='flex';
   $('btnGkAdd').classList.add('green');
+  $('btnGkClearForm').style.display='';
   gkLast=d;
   $('gkCavalo').value=d.placas[0]||'';
   $('gkBau1').value=d.placas[1]||'';
@@ -4964,7 +4973,8 @@ let gkEditIdx=null;
 function gkSetAddLabel(){ const b=$('btnGkAdd'); b.textContent=gkEditIdx==null?'+ Adicionar à lista':'✔ Salvar alteração'; $('btnGkCancel').style.display=gkEditIdx==null?'none':''; }
 function gkResetForm(msg){
   $('gkDoc').value=''; $('gkPaste').value=''; $('gkFields').style.display='none'; $('gkShot').style.display='none';
-  $('btnGkAdd').classList.remove('green'); gkLast=null; gkEditIdx=null; gkSetAddLabel();
+  ['gkCavalo','gkBau1','gkBau2','gkUf','gkTipo','gkTransp','gkMotorista','gkCpf','gkCliente'].forEach(id=>{ $(id).value=''; });
+  $('btnGkAdd').classList.remove('green'); $('btnGkClearForm').style.display='none'; gkLast=null; gkEditIdx=null; gkSetAddLabel();
   if(msg!=null) $('gkParseMsg').textContent=msg;
 }
 function gkEdit(i){
@@ -5042,6 +5052,12 @@ function gkInit(){
     gkSaveList(list); gkResetForm('Adicionado à lista.'); gkRenderTable();
   };
   $('btnGkCancel').onclick=()=>{ gkResetForm('Edição cancelada.'); gkRenderTable(); };
+  /* Descartar o que foi colado (texto ou print). Em edição, só limpa a colagem e mantém o lançamento. */
+  const descartar=()=>{ if(gkEditIdx!=null){ $('gkPaste').value=''; $('gkShot').style.display='none'; $('gkParseMsg').textContent='Print descartado — o lançamento em edição continua; corrija os campos ou cancele a edição.'; return; }
+    const doc=$('gkDoc').value; gkResetForm('Descartado. Cole outro print ou os dados novamente.'); $('gkDoc').value=doc; };
+  $('btnGkClearForm').onclick=descartar;
+  $('btnGkShotDel').onclick=descartar;
+  $('btnGkShotSwap').onclick=()=>$('gkShotFile').click();
   $('btnGkCopy').onclick=()=>{
     const list=gkLoadList();
     const head=['Origem','Documento','Placa cavalo','Placa baú 1','Placa baú 2','UF','Tipo','Transportadora','Motorista','CPF','Destino'].join('\t');
