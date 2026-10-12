@@ -4778,55 +4778,124 @@ function gkAssunto(raw){
 }
 function gkDestinoAssunto(raw){ return gkAssunto(raw).destino; }
 /* Formato "Campo: valor" (gerado ao colar a tabela do e-mail ou ao ler um print). */
-const GK_KV={NOME:'motorista',MOTORISTA:'motorista','PLACA CAVALO':'cavalo',CAVALO:'cavalo','PLACA CARRETA 1':'bau1','PLACA BAU 1':'bau1','PLACA CARRETA 2':'bau2','PLACA BAU 2':'bau2',
-  UF:'uf',TIPO:'tipo',CPF:'cpf',TRANSPORTADORA:'transportadora',DESTINO:'cliente',CLIENTE:'cliente',ORIGEM:'origem'};
-const GK_KV_N={}; Object.keys(GK_KV).forEach(k=>{GK_KV_N[k.replace(/[^A-Z0-9]/g,'')]=GK_KV[k];});
-/* Rótulo → campo, ignorando acentos, espaços e quebras ("Placa<br>carreta 1" = "PLACACARRETA1"). */
-function gkKey(label){ return GK_KV_N[normText(label).replace(/[^A-Z0-9]/g,'')]; }
+/* Rótulo → campo, ignorando acentos, espaços e quebras. Aceita variações do e-mail do AG:
+   "Placa cavalo", "Placa carreta 1", "Placa do Carrinho 2", "Placa baú 1", "Nome", "CPF", "Transportadora"... */
+function gkKey(label){
+  const t=normText(label).replace(/[^A-Z0-9]/g,''); if(!t) return null;
+  if(/CAVALO|TRATOR/.test(t)) return 'cavalo';
+  if(/CARRETA|CARRINHO|BAU|REBOQUE/.test(t)) return /2$/.test(t)?'bau2':'bau1';
+  if(/MOTORISTA|^NOME/.test(t)) return 'motorista';
+  if(/CPF/.test(t)) return 'cpf';
+  if(/TRANSP/.test(t)) return 'transportadora';
+  if(/DESTINO|CLIENTE/.test(t)) return 'cliente';
+  if(t==='UF') return 'uf';
+  if(/^TIPO/.test(t)) return 'tipo';
+  if(t==='ORIGEM') return 'origem';
+  return null;
+}
+/* 8 caracteres (o leitor duplicou um, ex.: "FY28GA47"): tira um caractere e fica com a placa que precisa de
+   menos correções; no empate, prefere tirar o que é parecido com o vizinho (A/4, I/1, O/0, S/5, B/8, Z/2, G/6, T/7). */
+function gkFixPlaca8(t){
+  if((t.match(/\d/g)||[]).length<2||(t.match(/[A-Z]/g)||[]).length<2) return null;
+  const par=(a,b)=>GK_L2D[a]===b||GK_L2D[b]===a;
+  let best=null;
+  for(let i=0;i<8;i++){
+    const u=t.slice(0,i)+t.slice(i+1), f=gkFixPlaca(u); if(!f) continue;
+    let n=0; for(let k=0;k<7;k++) if(f[k]!==u[k]) n++;
+    const sc=n*2-((i>0&&par(t[i],t[i-1]))||(i<7&&par(t[i],t[i+1]))?1:0);
+    if(!best||sc<best.sc) best={f,sc};
+  }
+  return best?best.f:null;
+}
+/* Placa lida com erro de OCR/digitação (ex.: "FY28G47" → "FYZ8G47"): 3 letras + 1 número + letra/número + 2 números.
+   Só tenta corrigir texto de 7 caracteres com pelo menos 2 números (não mexe em nomes). */
+const GK_L2D={O:'0',Q:'0',D:'0',I:'1',L:'1',Z:'2',S:'5',B:'8',G:'6',A:'4',T:'7'}, GK_D2L={'0':'O','1':'I','2':'Z','5':'S','8':'B','6':'G','4':'A','7':'T'};
+function gkFixPlaca(tok){
+  const t=String(tok||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+  if(t.length===8) return gkFixPlaca8(t);
+  if(t.length!==7) return null;
+  if(gkPlaca(t)) return t;
+  if((t.match(/\d/g)||[]).length<2||(t.match(/[A-Z]/g)||[]).length<2) return null;
+  const c=t.split('');
+  for(const i of [0,1,2]) if(/\d/.test(c[i])) c[i]=GK_D2L[c[i]]||c[i];
+  for(const i of [3,5,6]) if(/[A-Z]/.test(c[i])) c[i]=GK_L2D[c[i]]||c[i];
+  const f=c.join(''); return gkPlaca(f)?f:null;
+}
 function gkParseKv(raw){
   const o={}; let n=0;
   String(raw||'').replace(/\r/g,'').split('\n').forEach(l=>{ const m=l.match(/^\s*([^:]{2,30}):\s*(.*)$/); if(!m) return;
     const k=gkKey(m[1]); if(k){ o[k]=m[2].trim(); n++; } });
   if(n<2) return null;
-  const placas=[]; let uf=(o.uf||'').toUpperCase();
-  [o.cavalo,o.bau1,o.bau2].forEach(x=>{ const p=gkPlaca(x); if(p){ placas.push(p.placa); if(!uf&&p.uf) uf=p.uf; } });
-  return {origem:o.origem||'AG (e-mail)', placas, uf:GK_UFS.indexOf(uf)>=0?uf:'', tipo:o.tipo||'', transportadora:(o.transportadora||'').toUpperCase(),
+  const placas=[], avisos=[]; let uf=(o.uf||'').toUpperCase();
+  [o.cavalo,o.bau1,o.bau2].forEach(x=>{ const p=gkPlaca(x); if(p){ placas.push(p.placa); if(!uf&&p.uf) uf=p.uf; return; }
+    const f=gkFixPlaca(x); if(f){ placas.push(f); avisos.push(String(x).trim().toUpperCase()+' → '+f); } });
+  return {origem:o.origem||'AG (e-mail)', placas, avisos, uf:GK_UFS.indexOf(uf)>=0?uf:'', tipo:o.tipo||'', transportadora:(o.transportadora||'').toUpperCase(),
     motorista:(o.motorista||'').toUpperCase(), cpf:(o.cpf||'').replace(/\D/g,''), cliente:(o.cliente||'').toUpperCase()};
 }
 /* Texto livre (linha da tabela do e-mail colada com tabs ou lida de um print):
-   NOME | PLACA CAVALO | PLACA CARRETA 1 | PLACA CARRETA 2 | CPF | TRANSPORTADORA.
+   NOME | PLACA CAVALO | PLACA CARRETA/CARRINHO 1 | PLACA CARRETA/CARRINHO 2 | CPF | TRANSPORTADORA.
    O leitor de imagem às vezes quebra as células em linhas separadas: então procura no texto todo. */
-const GK_PLACA_RE=/\b([A-Z]{3}[- ]?[0-9][A-Z0-9][0-9]{2})\b/g;
-const GK_PLACA_1=/\b[A-Z]{3}[- ]?[0-9][A-Z0-9][0-9]{2}\b/;
 const GK_CPF_RE=/\b\d{3}[.,]?\d{3}[.,]?\d{3}[-.,]?\d{2}\b/;
-const GK_HEAD_RE=/PLACA|CAVALO|CARRETA|TRANSPORTADORA|^\s*NOME\b|\bCPF\b/;
+function gkCabecalho(l){ return (l.match(/PLACA|CAVALO|CARRETA|CARRINHO|\bCPF\b|\bNOME\b|TRANSPORTADORA|MOTORISTA/g)||[]).length>=2; }
 function gkParseLinha(raw){
   const asn=gkAssunto(raw);
   const lines=String(raw||'').toUpperCase().replace(/\r/g,'').split('\n')
     .map(l=>l.replace(/[|\[\]{}“”"'‘’_=~]/g,' ').replace(/\t/g,'  ').replace(/[ ]{3,}/g,'  ').trim())
     .filter(l=>l&&!/CARREGAMENTO\s*-/.test(l));
-  const body=lines.filter(l=>!GK_HEAD_RE.test(l));
-  const placas=[]; let pLine=-1, firstIdx=-1;
-  body.forEach((l,i)=>{ for(const m of l.matchAll(GK_PLACA_RE)){ const pl=m[1].replace(/[- ]/g,''); if(placas.indexOf(pl)<0){ placas.push(pl); if(pLine<0){pLine=i;firstIdx=m.index;} } } });
+  const body=lines.filter(l=>!gkCabecalho(l));
+  const soLetras=t=>t.replace(/[^A-ZÀ-Ú ]/g,' ').replace(/\s+/g,' ').trim();
+  const placas=[], avisos=[]; let pLine=-1, pTok=-1;
+  const toks=body.map(l=>l.split(/\s+/));
+  toks.forEach((ts,i)=>ts.forEach((tk,j)=>{
+    const clean=tk.replace(/[^A-Z0-9]/g,''); if(GK_CPF_RE.test(clean)) return;
+    const f=gkFixPlaca(clean); if(!f||placas.indexOf(f)>=0) return;
+    if(f!==clean) avisos.push(clean+' → '+f);
+    placas.push(f); if(pLine<0){pLine=i;pTok=j;}
+  }));
   if(!placas.length) return null;
   let cpf='', cpfLine=-1, cpfEnd=0;
   body.some((l,i)=>{ const m=l.match(GK_CPF_RE); if(m){ cpf=m[0].replace(/\D/g,''); cpfLine=i; cpfEnd=m.index+m[0].length; return true; } return false; });
-  const soLetras=t=>t.replace(/[^A-ZÀ-Ú ]/g,' ').replace(/\s+/g,' ').trim();
-  let nome=soLetras(body[pLine].slice(0,firstIdx));
-  if(nome.split(' ').length<2){ const c=body.find(l=>!GK_PLACA_1.test(l)&&!GK_CPF_RE.test(l)&&/^[A-ZÀ-Ú]{2,}( [A-ZÀ-Ú]{2,}){1,5}$/.test(soLetras(l))&&soLetras(l)===l.replace(/\s+/g,' ').trim()); nome=c?soLetras(c):''; }
+  const temPlaca=l=>l.split(/\s+/).some(tk=>gkFixPlaca(tk));
+  let nome=soLetras(toks[pLine].slice(0,pTok).join(' '));
+  if(nome.split(' ').length<2){ const c=body.find(l=>!temPlaca(l)&&!GK_CPF_RE.test(l)&&/^[A-ZÀ-Ú]{2,}( [A-ZÀ-Ú]{2,}){1,5}$/.test(l.replace(/\s+/g,' ').trim())); nome=c?soLetras(c):''; }
   if(!nome&&asn.motorista) nome=asn.motorista;
   let transp='';
-  if(cpfLine>=0){ transp=soLetras(body[cpfLine].slice(cpfEnd)); if(!transp&&body[cpfLine+1]&&!GK_PLACA_1.test(body[cpfLine+1])) transp=soLetras(body[cpfLine+1]); }
-  if(!transp){ const l=body[pLine]; const ms=[...l.matchAll(GK_PLACA_RE)]; const last=ms[ms.length-1]; transp=soLetras(l.slice(last.index+last[0].length)); }
+  if(cpfLine>=0){ transp=soLetras(body[cpfLine].slice(cpfEnd)); if(!transp&&body[cpfLine+1]&&!temPlaca(body[cpfLine+1])) transp=soLetras(body[cpfLine+1]); }
+  if(!transp){ const ts=toks[pLine]; let k=ts.length-1; while(k>=0&&!gkFixPlaca(ts[k])) k--; transp=soLetras(ts.slice(k+1).join(' ')); }
   return {origem:'AG (e-mail)', placas:placas.slice(0,3), uf:'', transportadora:transp.split(' ').slice(0,4).join(' '), motorista:nome,
-    cpf, cliente:asn.destino};
+    cpf, cliente:asn.destino, avisos};
+}
+/* Texto do GK: cada placa numa linha, depois transportadora, motorista, CPF e cliente.
+   Não depende das linhas em branco: classifica cada linha (placa, UF, CPF ou texto). */
+function gkParseGK(raw){
+  const lines=String(raw||'').replace(/\r/g,'').split('\n').map(l=>l.trim()).filter(Boolean);
+  const placas=[]; let uf='', cpf='', cpfAt=-1; const txt=[];
+  lines.forEach((l,i)=>{
+    const p=gkPlaca(l);
+    if(p){ if(placas.indexOf(p.placa)<0) placas.push(p.placa); if(!uf&&p.uf) uf=p.uf; return; }
+    if(GK_UFS.indexOf(l.toUpperCase())>=0){ if(!uf) uf=l.toUpperCase(); return; }
+    if(cpfAt<0&&/^\D*\d{3}\.?\d{3}\.?\d{3}-?\d{2}\D*$/.test(l)){ cpf=l.replace(/\D/g,''); cpfAt=i; return; }
+    txt.push({i,l});
+  });
+  if(!placas.length) return null;
+  let transportadora='', motorista='', cliente='';
+  if(cpfAt>=0){
+    const antes=txt.filter(t=>t.i<cpfAt), depois=txt.filter(t=>t.i>cpfAt);
+    motorista=antes.length?antes[antes.length-1].l:'';
+    transportadora=antes.length>=2?antes[0].l:'';
+    cliente=depois.length?depois[0].l:'';
+  } else if(txt.length===3){ [transportadora,motorista,cliente]=txt.map(t=>t.l); }
+  else return gkParseBlock(raw);
+  return {origem:'GK', placas:placas.slice(0,3), uf, transportadora, motorista, cpf, cliente};
 }
 /* Escolhe o formato: "Campo: valor" → linha de tabela (e-mail do AG) → bloco do GK. */
 function gkParseAny(raw){
   const kv=gkParseKv(raw); if(kv){ if(!kv.cliente) kv.cliente=gkDestinoAssunto(raw); return kv; }
-  const first=String(raw||'').trim().split(/\n\s*\n/)[0]||'';
-  const gkLike=first.split('\n').every(l=>gkPlaca(l)||GK_UFS.indexOf(l.trim().toUpperCase())>=0);
-  if(!gkLike){ const ln=gkParseLinha(raw); if(ln) return ln; }
+  /* GK = alguma linha contém só a placa; e-mail do AG = nome e placas na mesma linha */
+  const ls=String(raw||'').toUpperCase().split('\n');
+  const linhasPlaca=ls.some(l=>l.trim()&&gkPlaca(l.trim()));
+  if(linhasPlaca&&!ls.some(gkCabecalho)){ const g=gkParseGK(raw); if(g) return g; }
+  const ln=gkParseLinha(raw); if(ln) return ln;
   return gkParseBlock(raw);
 }
 function gkToKv(d){
@@ -4841,7 +4910,7 @@ function gkTableFromHtml(html){
     const rows=[...t.querySelectorAll('tr')].map(tr=>[...tr.children].map(cellTxt));
     const h=rows.findIndex(r=>r.some(c=>/PLACA/i.test(c)));
     if(h<0) continue;
-    const data=rows.slice(h+1).find(r=>r.some(c=>gkPlaca(c)));
+    const data=rows.slice(h+1).find(r=>r.some(c=>gkFixPlaca(c)));
     if(!data) continue;
     const kv=rows[h].map((c,i)=>c&&gkKey(c)?c+': '+(data[i]||''):'').filter(Boolean);
     const txt=doc.body.textContent||''; const dest=gkDestinoAssunto(txt);
@@ -4908,7 +4977,7 @@ async function gkOcr(file, onDone){
     if(!d||!d.placas.length){ $('gkParseMsg').textContent='Não reconheci placas no print. Copie a tabela do e-mail (selecione e Ctrl+C) e cole aqui, ou digite os dados.'; return; }
     $('gkPaste').value=gkToKv(d);
     onDone();
-    $('gkParseMsg').textContent+=' Lido a partir do print — confira as placas e o CPF com a imagem.';
+    $('gkParseMsg').textContent+=' Lido a partir do print — confira as placas e o CPF com a imagem.'+(d.avisos&&d.avisos.length?' ATENÇÃO, placa corrigida: '+d.avisos.join(', ')+'.':'');
   }catch(e){
     $('gkParseMsg').textContent='Não consegui ler o print ('+e.message+'). Copie a tabela do e-mail (selecione e Ctrl+C) e cole aqui.';
   }
@@ -5020,7 +5089,7 @@ function gkInit(){
     if(!d.cliente) falta.push('informe o destino');
     if(!d.uf) falta.push('escolha a UF');
     if(!$('gkTipo').value) falta.push('escolha o tipo de veículo');
-    $('gkParseMsg').textContent=(d.origem==='GK'?'Dados do GK':'Dados do e-mail do AG')+' reconhecidos ('+d.placas.length+' placa'+(d.placas.length===1?'':'s')+')'+(falta.length?' — '+falta.join(', '):'')+'. Confira os campos e clique em "Adicionar à lista".';
+    $('gkParseMsg').textContent=(d.origem==='GK'?'Dados do GK':'Dados do e-mail do AG')+' reconhecidos ('+d.placas.length+' placa'+(d.placas.length===1?'':'s')+')'+(falta.length?' — '+falta.join(', '):'')+'. Confira os campos e clique em "Adicionar à lista".'+(d.avisos&&d.avisos.length?' ATENÇÃO, placa corrigida: '+d.avisos.join(', ')+' — confira.':'');
     return true;
   };
   const pasteBox=$('gkPaste');
