@@ -633,6 +633,7 @@ td .badge:has(.lgo){padding:3px 11px;font-size:14px;font-weight:700;border:1px s
       <img id="gkShotImg" alt="Print do e-mail do AG">
     </div>
     <div class="gkFields" id="gkFields" style="display:none">
+      <div class="fld" style="flex:0 1 120px" title="Finalidade Veic. na ZTTM0026 (C = Coleta)"><label>Finalidade *</label><input id="gkFinal" maxlength="1" autocomplete="off" style="text-transform:uppercase"></div>
       <div class="fld"><label>Placa do cavalo</label><input id="gkCavalo" autocomplete="off"></div>
       <div class="fld"><label>Placa baú 1</label><input id="gkBau1" autocomplete="off"></div>
       <div class="fld"><label>Placa baú 2 (bitrem)</label><input id="gkBau2" autocomplete="off"></div>
@@ -2859,9 +2860,9 @@ MsgBox final, vbInformation + vbSystemModal, TITULO
     }
     return {ok:true,code:VV.replace(/\r?\n/g,'\r\n'),problems:[]};
   },
-  RUNNER_VERSAO:16,
+  RUNNER_VERSAO:17,
   DADOS_VERSAO:14,
-  PORTARIA_VERSAO:16,
+  PORTARIA_VERSAO:17,
   localName(origem){const o=String(origem||''); if(/AG/i.test(o))return 'NSA'; if(/0707/.test(o))return 'TRANSF. 0700'; return 'BALL';},
   handlerMain(BS){ return `' ------------------------------- FaturamentoSAP (atalho br3r://) -------------------------------
 ' Um clique em ENVIAR AO SAP no painel abre este script com os dados da carga.
@@ -3284,7 +3285,15 @@ End Sub
 Const P_G26 = "wnd[0]/usr/cntlGRID1/shellcont/shell"
 Const P_F4LIN3 = "wnd[2]/usr/sub/1[0,0]/sub/1/2[0,0]/sub/1/2/3[0,3]/lbl[12,3]"
 Const ST_AGUARDANDO = "AGUARDANDO CHAMADA"
-Dim DIAS26
+Dim DIAS26, NUM_CADASTRO26
+
+Function IIf26(c, a, b)
+    If c Then
+        IIf26 = a
+    Else
+        IIf26 = b
+    End If
+End Function
 
 Function PV(k)
     PV = ""
@@ -3479,28 +3488,61 @@ Function Aguardando26(achou, como)
     Aguardando26 = CLng(s)
 End Function
 
+' Textos de uma janela (para registrar no log e ler o numero gravado).
+Function TextoJanela(w)
+    Dim ch, t
+    t = ""
+    On Error Resume Next
+    For Each ch In session.findById(w & "/usr").Children
+        If Trim(ch.Text) <> "" Then t = t & " " & Trim(ch.Text)
+    Next
+    Err.Clear
+    On Error GoTo 0
+    TextoJanela = Trim(t)
+End Function
+
 Sub Cadastrar26()
-    Dim foco, escolha, r, msg
+    Dim foco, escolha, r, msg, ch, criou
     Etapa "cadastrar veiculo (botao Cadastrar)"
     session.findById("wnd[0]/tbar[1]/btn[7]").press
     If Not Existe("wnd[1]/usr/txtLECI_TRA_DYN-VEHICLE_REG_NUMB") And Existe("wnd[1]/tbar[0]/btn[0]") Then
-        Registrar "      Janela antes do cadastro: " & session.findById("wnd[1]").Text
+        ' janela "Cadastro de Veiculo": Excluir / Modificar / Criar -> marca CRIAR e confirma
+        criou = False
+        On Error Resume Next
+        For Each ch In session.findById("wnd[1]/usr").Children
+            If ch.Type = "GuiRadioButton" Then
+                If UCase(Trim(ch.Text)) = "CRIAR" Then
+                    ch.Select
+                    criou = True
+                End If
+            End If
+        Next
+        Err.Clear
+        On Error GoTo 0
+        Registrar "      Janela " & session.findById("wnd[1]").Text & ": opcao Criar " & IIf26(criou, "marcada", "nao encontrada (fica a padrao)")
         session.findById("wnd[1]/tbar[0]/btn[0]").press
     End If
+    ' Finalidade Veic. e o primeiro campo da janela de cadastro (o cursor ja esta nele): digita (C = Coleta).
+    Etapa "finalidade do veiculo: " & PV("FINALIDADE")
     foco = ""
+    escolha = ""
     On Error Resume Next
-    foco = session.ActiveWindow.GuiFocus.Id
+    Set ch = session.ActiveWindow.GuiFocus
+    foco = ch.Id
     Err.Clear
     On Error GoTo 0
-    Etapa "primeiro campo do cadastro (lista F4, 3a opcao - igual a gravacao)"
-    session.findById("wnd[1]").sendVKey 4
-    escolha = ""
-    If Existe(P_F4LIN3) Then
-        escolha = TextoDe(P_F4LIN3)
-        session.findById(P_F4LIN3).setFocus
-        session.findById("wnd[2]").sendVKey 2
+    If PV("FINALIDADE") <> "" And foco <> "" And InStr(foco, "LECI_TRA_DYN") = 0 And InStr(foco, "LECI_EVENT_DATA") = 0 And InStr(foco, "VTTK-VSART") = 0 And InStr(foco, "T005S-BLAND") = 0 Then
+        ch.Text = PV("FINALIDADE")
+        escolha = PV("FINALIDADE") & " (digitado)"
+    Else
+        session.findById("wnd[1]").sendVKey 4
+        If Existe(P_F4LIN3) Then
+            escolha = TextoDe(P_F4LIN3) & " (lista F4, 3a opcao)"
+            session.findById(P_F4LIN3).setFocus
+            session.findById("wnd[2]").sendVKey 2
+        End If
     End If
-    Registrar "      Campo com F4: " & foco & " -> escolhido: " & escolha
+    Registrar "      Campo finalidade: " & foco & " -> " & escolha
     If Not Existe("wnd[1]/usr/txtLECI_TRA_DYN-VEHICLE_REG_NUMB") Then Err.Raise vbObjectError + 604, "Portaria", "A janela de cadastro da ZTTM0026 nao abriu como na gravacao."
     Etapa "preencher cadastro"
     session.findById("wnd[1]/usr/txtLECI_TRA_DYN-VEHICLE_REG_NUMB").text = PV("CAVALO")
@@ -3513,13 +3555,15 @@ Sub Cadastrar26()
     session.findById("wnd[1]/usr/txtLECI_TRA_DYN-ID_CARD_NUMB").text = PV("CPF")
     session.findById("wnd[1]/usr/txtLECI_EVENT_DATA-PHONE").text = PV("DESTINO")
     If MODO_CONFERENCIA Then
-        r = MsgBox("Confira o CADASTRO preenchido na janela do SAP:" & vbCrLf & vbCrLf & "Cavalo " & PV("CAVALO") & " / Carreta 1 " & PV("CARRETA1") & " / Carreta 2 " & PV("CARRETA2") & vbCrLf & "Tipo " & PV("TIPO") & " | UF " & PV("UF") & vbCrLf & "Transportadora " & PV("TRANSP") & vbCrLf & "Motorista " & PV("MOTORISTA") & " | CPF " & PV("CPF") & vbCrLf & "Destino " & PV("DESTINO") & vbCrLf & "Primeiro campo (F4): " & escolha & vbCrLf & vbCrLf & "SIM = gravar o cadastro (OK)" & vbCrLf & "NAO = parar (a janela fica aberta no SAP para voce fechar)", vbYesNo + vbQuestion + vbSystemModal, TITULO)
+        r = MsgBox("Confira o CADASTRO preenchido na janela do SAP:" & vbCrLf & vbCrLf & "Cavalo " & PV("CAVALO") & " / Carreta 1 " & PV("CARRETA1") & " / Carreta 2 " & PV("CARRETA2") & vbCrLf & "Tipo " & PV("TIPO") & " | UF " & PV("UF") & vbCrLf & "Transportadora " & PV("TRANSP") & vbCrLf & "Motorista " & PV("MOTORISTA") & " | CPF " & PV("CPF") & vbCrLf & "Destino " & PV("DESTINO") & vbCrLf & "Finalidade: " & escolha & vbCrLf & vbCrLf & "SIM = gravar o cadastro (OK)" & vbCrLf & "NAO = parar (a janela fica aberta no SAP para voce fechar)", vbYesNo + vbQuestion + vbSystemModal, TITULO)
         If r <> vbYes Then Err.Raise vbObjectError + 605, "Portaria", "Cancelado pelo operador antes de gravar o cadastro."
     End If
     Etapa "gravar cadastro (OK)"
     session.findById("wnd[1]/usr/btnOK").press
     If Existe("wnd[2]/tbar[0]/btn[0]") Then
-        Registrar "      Mensagem apos o cadastro: " & session.findById("wnd[2]").Text
+        msg = TextoJanela("wnd[2]")
+        Registrar "      Mensagem apos o cadastro: " & msg
+        NUM_CADASTRO26 = ExtrairNumero(msg)
         session.findById("wnd[2]/tbar[0]/btn[0]").press
     End If
     If Existe("wnd[1]/usr/txtLECI_TRA_DYN-VEHICLE_REG_NUMB") Then
@@ -3600,7 +3644,7 @@ Function PortariaPassos()
         Next
     End If
     If cadastrou Then
-        PortariaPassos = "Veiculo CADASTRADO e ENTRADA dada na ZTTM0026." & vbCrLf & vbCrLf & "Situacao agora:" & vbCrLf & depois
+        PortariaPassos = "Veiculo CADASTRADO (operacao " & NUM_CADASTRO26 & ") e ENTRADA dada na ZTTM0026." & vbCrLf & vbCrLf & "Situacao agora:" & vbCrLf & depois
     Else
         PortariaPassos = "Veiculo ja estava cadastrado: ENTRADA dada na ZTTM0026." & vbCrLf & vbCrLf & "Situacao agora:" & vbCrLf & depois
     End If
@@ -3610,7 +3654,8 @@ Sub ProcessarPortaria()
     Dim r, resumo, final
     DIAS26 = 3
     If IsNumeric(PV("DIAS")) Then DIAS26 = CInt(PV("DIAS"))
-    resumo = "Local: " & PV("LOCAL") & "   Cadastros desde: " & Data26() & vbCrLf & "Cavalo: " & PV("CAVALO") & vbCrLf & "Carreta 1: " & PV("CARRETA1") & vbCrLf & "Carreta 2: " & PV("CARRETA2") & vbCrLf & "UF: " & PV("UF") & "   Tipo: " & PV("TIPO") & vbCrLf & "Transportadora: " & PV("TRANSP") & vbCrLf & "Motorista: " & PV("MOTORISTA") & "   CPF: " & PV("CPF") & vbCrLf & "Destino: " & PV("DESTINO")
+    NUM_CADASTRO26 = ""
+    resumo = "Finalidade: " & PV("FINALIDADE") & vbCrLf & "Local: " & PV("LOCAL") & "   Cadastros desde: " & Data26() & vbCrLf & "Cavalo: " & PV("CAVALO") & vbCrLf & "Carreta 1: " & PV("CARRETA1") & vbCrLf & "Carreta 2: " & PV("CARRETA2") & vbCrLf & "UF: " & PV("UF") & "   Tipo: " & PV("TIPO") & vbCrLf & "Transportadora: " & PV("TRANSP") & vbCrLf & "Motorista: " & PV("MOTORISTA") & "   CPF: " & PV("CPF") & vbCrLf & "Destino: " & PV("DESTINO")
     Registrar "Portaria ZTTM0026 - " & Replace(resumo, vbCrLf, " | ")
     r = MsgBox("PORTARIA - ZTTM0026" & vbCrLf & vbCrLf & resumo & vbCrLf & vbCrLf & "Vou procurar o veiculo na ZTTM0026 (placa do cavalo; se nao achar, nome do motorista):" & vbCrLf & "- NAO cadastrado: cadastro com estes dados e dou ENTRADA;" & vbCrLf & "- ja cadastrado (AGUARDANDO CHAMADA): so dou ENTRADA." & vbCrLf & vbCrLf & "O SAP precisa estar aberto e logado. Continuar?", vbYesNo + vbQuestion + vbSystemModal, TITULO)
     If r <> vbYes Then
@@ -3759,7 +3804,7 @@ ProcessarArquivo arqEnt
     const sp=((cfg.sap&&cfg.sap.shippingPoints)||['BR3R']).filter(Boolean);
     const L=['H|VERSAO|'+this.PORTARIA_VERSAO,'H|ACAO|PORTARIA','H|ID|'+c(opts.id||''),'H|MODO_CONFERENCIA|'+(opts.conferencia!==false?'1':'0'),
       'H|P_LOCAL|'+c(opts.local||sp[0]||'BR3R'),'H|P_DATA|'+c(opts.data||''),'H|P_DIAS|'+(opts.dias||3),
-      'H|P_CAVALO|'+c(v.cavalo),'H|P_CARRETA1|'+c(v.bau1),'H|P_CARRETA2|'+c(v.bau2),'H|P_UF|'+c(v.uf),'H|P_TIPO|'+c(v.tipo),
+      'H|P_FINALIDADE|'+c(v.finalidade||'C'),'H|P_CAVALO|'+c(v.cavalo),'H|P_CARRETA1|'+c(v.bau1),'H|P_CARRETA2|'+c(v.bau2),'H|P_UF|'+c(v.uf),'H|P_TIPO|'+c(v.tipo),
       'H|P_TRANSP|'+c(v.transportadora),'H|P_MOTORISTA|'+c(v.motorista),'H|P_CPF|'+c(v.cpf),'H|P_DESTINO|'+c(v.cliente),'FIM'];
     return L.join('\r\n')+'\r\n';
   },
@@ -4799,7 +4844,7 @@ function doPrepare(){
    Um clique: o painel abre br3r://run?d=<dados da carga>; o FaturamentoSAP.vbs (instalado uma vez
    com dois cliques) recebe os dados, mostra o resumo para confirmar e roda no SAP. */
 const SapDirect={
-  ctx:null, RUNNER_VERSAO:16,
+  ctx:null, RUNNER_VERSAO:17,
   b64url(t){return btoa(unescape(encodeURIComponent(t))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');},
   async update(){
     const _u=$('btnUpd'); if(_u){_u.disabled=true;setTimeout(()=>{_u.disabled=false;},6000);}
@@ -5180,6 +5225,7 @@ function gkKey(label){
   if(t==='UF') return 'uf';
   if(/^TIPO/.test(t)) return 'tipo';
   if(t==='ORIGEM') return 'origem';
+  if(/^FINALIDADE/.test(t)) return 'finalidade';
   return null;
 }
 /* 8 caracteres (o leitor duplicou um, ex.: "FY28GA47"): tira um caractere e fica com a placa que precisa de
@@ -5218,7 +5264,7 @@ function gkParseKv(raw){
   const placas=[], avisos=[]; let uf=(o.uf||'').toUpperCase();
   [o.cavalo,o.bau1,o.bau2].forEach(x=>{ const p=gkPlaca(x); if(p){ placas.push(p.placa); if(!uf&&p.uf) uf=p.uf; return; }
     const f=gkFixPlaca(x); if(f){ placas.push(f); avisos.push(String(x).trim().toUpperCase()+' → '+f); } });
-  return {origem:o.origem||'AG (e-mail)', placas, avisos, uf:GK_UFS.indexOf(uf)>=0?uf:'', tipo:o.tipo||'', transportadora:(o.transportadora||'').toUpperCase(),
+  return {origem:o.origem||'AG (e-mail)', finalidade:(o.finalidade||'').toUpperCase().slice(0,1), placas, avisos, uf:GK_UFS.indexOf(uf)>=0?uf:'', tipo:o.tipo||'', transportadora:(o.transportadora||'').toUpperCase(),
     motorista:(o.motorista||'').toUpperCase(), cpf:(o.cpf||'').replace(/\D/g,''), cliente:(o.cliente||'').toUpperCase()};
 }
 /* Texto livre (linha da tabela do e-mail colada com tabs ou lida de um print):
@@ -5258,8 +5304,9 @@ function gkParseLinha(raw){
    Não depende das linhas em branco: classifica cada linha (placa, UF, CPF ou texto). */
 function gkParseGK(raw){
   const lines=String(raw||'').replace(/\r/g,'').split('\n').map(l=>l.trim()).filter(Boolean);
-  const placas=[]; let uf='', cpf='', cpfAt=-1; const txt=[];
+  const placas=[]; let uf='', cpf='', cpfAt=-1, finalidade=''; const txt=[];
   lines.forEach((l,i)=>{
+    if(!placas.length&&!finalidade&&/^[A-Za-z]$/.test(l)){ finalidade=l.toUpperCase(); return; } /* 1a linha do GK: finalidade (C = Coleta) */
     const p=gkPlaca(l);
     if(p){ if(placas.indexOf(p.placa)<0) placas.push(p.placa); if(!uf&&p.uf) uf=p.uf; return; }
     if(GK_UFS.indexOf(l.toUpperCase())>=0){ if(!uf) uf=l.toUpperCase(); return; }
@@ -5275,7 +5322,7 @@ function gkParseGK(raw){
     cliente=depois.length?depois[0].l:'';
   } else if(txt.length===3){ [transportadora,motorista,cliente]=txt.map(t=>t.l); }
   else return gkParseBlock(raw);
-  return {origem:'GK', placas:placas.slice(0,3), uf, transportadora, motorista, cpf, cliente};
+  return {origem:'GK', finalidade, placas:placas.slice(0,3), uf, transportadora, motorista, cpf, cliente};
 }
 /* Escolhe o formato: "Campo: valor" → linha de tabela (e-mail do AG) → bloco do GK. */
 function gkParseAny(raw){
@@ -5288,7 +5335,7 @@ function gkParseAny(raw){
   return gkParseBlock(raw);
 }
 function gkToKv(d){
-  return ['Origem: '+(d.origem||''),'Nome: '+(d.motorista||''),'Placa cavalo: '+(d.placas[0]||''),'Placa carreta 1: '+(d.placas[1]||''),'Placa carreta 2: '+(d.placas[2]||''),
+  return ['Origem: '+(d.origem||''),'Finalidade: '+(d.finalidade||'C'),'Nome: '+(d.motorista||''),'Placa cavalo: '+(d.placas[0]||''),'Placa carreta 1: '+(d.placas[1]||''),'Placa carreta 2: '+(d.placas[2]||''),
     'CPF: '+(d.cpf||''),'Transportadora: '+(d.transportadora||''),'Destino: '+(d.cliente||'')].join('\n');
 }
 /* Tabela HTML copiada do Outlook (Ctrl+C no corpo do e-mail) → "Campo: valor". */
@@ -5404,6 +5451,7 @@ function gkRenderFields(d){
   $('btnGkClearForm').style.display='';
   $('btnGkSap').style.display='';
   gkLast=d;
+  $('gkFinal').value=(d.finalidade||'C').toUpperCase();
   $('gkCavalo').value=d.placas[0]||'';
   $('gkBau1').value=d.placas[1]||'';
   $('gkBau2').value=d.placas[2]||'';
@@ -5422,7 +5470,7 @@ function gkReadForm(){
   const r={
     doc:($('gkDoc').value||'').replace(/\D/g,''),
     cavalo:up('gkCavalo').replace(/[^A-Z0-9]/g,''), bau1:up('gkBau1').replace(/[^A-Z0-9]/g,''), bau2:up('gkBau2').replace(/[^A-Z0-9]/g,''),
-    uf:$('gkUf').value, tipo:$('gkTipo').value,
+    finalidade:up('gkFinal').replace(/[^A-Z]/g,''), uf:$('gkUf').value, tipo:$('gkTipo').value,
     transportadora:up('gkTransp'), motorista:up('gkMotorista'), cpf:($('gkCpf').value||'').replace(/\D/g,''), cliente:up('gkCliente')
   };
   if(r.doc) r.doc=r.doc.padStart(10,'0');
@@ -5431,6 +5479,7 @@ function gkReadForm(){
   if(!gkPlaca(r.cavalo)) err.push('placa do cavalo inválida');
   if(r.bau1&&!gkPlaca(r.bau1)) err.push('placa do baú 1 inválida');
   if(r.bau2&&!gkPlaca(r.bau2)) err.push('placa do baú 2 inválida');
+  if(!r.finalidade) err.push('informe a finalidade (C = Coleta)');
   if(!r.uf) err.push('escolha a UF da placa');
   if(!r.tipo) err.push('escolha o tipo de veículo');
   if(r.tipo&&gkIsBitrem(r.tipo)&&!r.bau2) err.push(r.tipo+' é bitrem: falta a placa do baú 2');
@@ -5445,14 +5494,14 @@ let gkEditIdx=null;
 function gkSetAddLabel(){ const b=$('btnGkAdd'); b.textContent=gkEditIdx==null?'+ Adicionar à lista':'✔ Salvar alteração'; $('btnGkCancel').style.display=gkEditIdx==null?'none':''; }
 function gkResetForm(msg){
   $('gkDoc').value=''; $('gkPaste').value=''; $('gkFields').style.display='none'; $('gkShot').style.display='none';
-  ['gkCavalo','gkBau1','gkBau2','gkUf','gkTipo','gkTransp','gkMotorista','gkCpf','gkCliente','gkData'].forEach(id=>{ $(id).value=''; });
+  ['gkFinal','gkCavalo','gkBau1','gkBau2','gkUf','gkTipo','gkTransp','gkMotorista','gkCpf','gkCliente','gkData'].forEach(id=>{ $(id).value=''; });
   $('btnGkAdd').classList.remove('green'); $('btnGkClearForm').style.display='none'; $('btnGkSap').style.display='none'; gkLast=null; gkEditIdx=null; gkSetAddLabel();
   if(msg!=null) $('gkParseMsg').textContent=msg;
 }
 function gkEdit(i){
   const r=gkLoadList()[i]; if(!r) return;
   const p=r.cavalo!=null?[r.cavalo,r.bau1,r.bau2]:String(r.placas||'').split(' / ');
-  gkRenderFields({origem:r.origem||'GK', placas:p.filter(Boolean), uf:r.uf||'', tipo:r.tipo||'', transportadora:r.transportadora||'', motorista:r.motorista||'', cpf:r.cpf||'', cliente:r.cliente||''});
+  gkRenderFields({origem:r.origem||'GK', finalidade:r.finalidade||'C', placas:p.filter(Boolean), uf:r.uf||'', tipo:r.tipo||'', transportadora:r.transportadora||'', motorista:r.motorista||'', cpf:r.cpf||'', cliente:r.cliente||''});
   $('gkCavalo').value=p[0]||''; $('gkBau1').value=p[1]||''; $('gkBau2').value=p[2]||'';
   $('gkUf').value=r.uf||''; $('gkTipo').value=r.tipo||'';
   $('gkDoc').value=r.doc||''; $('gkPaste').value=''; $('gkShot').style.display='none';
