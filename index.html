@@ -2854,14 +2854,14 @@ MsgBox final, vbInformation + vbSystemModal, TITULO
     let VV=V;
     if(opts.handler){
       const cut=(txt,a,b,repl)=>{const i=txt.indexOf(a),j=txt.indexOf(b);if(i<0||j<0||j<i)throw new Error('marcador '+a+' nao encontrado');return txt.slice(0,i)+repl+txt.slice(j+b.length);};
-      VV=cut(VV,"'@@DADOS1_INI","'@@DADOS1_FIM","Dim MODO_CONFERENCIA, CRIAR_DOC_TRANSPORTE, VEICULO, TRANSPORTADORA, CLIENTE_DOC, TRANSP_NOME, VEIC_DESC, VEIC_CAP, CONF_VISUAL");
+      VV=cut(VV,"'@@DADOS1_INI","'@@DADOS1_FIM","Dim MODO_CONFERENCIA, CRIAR_DOC_TRANSPORTE, VEICULO, TRANSPORTADORA, CLIENTE_DOC, TRANSP_NOME, VEIC_DESC, VEIC_CAP, CONF_VISUAL, SEGUIR_0003");
       VV=cut(VV,"'@@DADOS2_INI","'@@DADOS2_FIM","Dim REMESSAS, LOCAIS_EXP");
       const i=VV.indexOf("'@@MAIN_INI"); if(i<0) throw new Error('marcador MAIN nao encontrado');
       VV=VV.slice(0,i)+this.handlerMain(BS);
     }
     return {ok:true,code:VV.replace(/\r?\n/g,'\r\n'),problems:[]};
   },
-  RUNNER_VERSAO:19,
+  RUNNER_VERSAO:20,
   DADOS_VERSAO:14,
   PORTARIA_VERSAO:19,
   EXPEDICAO_VERSAO:18,
@@ -2922,6 +2922,7 @@ Sub CarregarDados(caminho)
     Set dL = CreateObject("Scripting.Dictionary")
     ACAO = ""
     PORT.RemoveAll
+    SEGUIR_0003 = False
     MODO_CONFERENCIA = True
     CRIAR_DOC_TRANSPORTE = False
     VEICULO = ""
@@ -2942,6 +2943,7 @@ Sub CarregarDados(caminho)
             If p(0) = "H" And UBound(p) >= 2 Then
                 If p(1) = "VERSAO" Then verArq = CInt(p(2))
                 If p(1) = "ACAO" Then ACAO = p(2)
+                If p(1) = "SEGUIR_0003" Then SEGUIR_0003 = (p(2) = "1")
                 If Left(p(1), 2) = "P_" Then PORT(Mid(p(1), 3)) = p(2)
                 If p(1) = "MODO_CONFERENCIA" Then MODO_CONFERENCIA = (p(2) = "1")
                 If p(1) = "CRIAR_DOC" Then CRIAR_DOC_TRANSPORTE = (p(2) = "1")
@@ -3236,14 +3238,14 @@ Sub AtualizarSAP(b64)
 End Sub
 
 Sub ProcessarCarga()
-    Dim i, r, resumo, tmp, lista, final
+    Dim i, r, resumo, tmp, lista, final, expRes
     Registrar "Inicio - Veiculo " & VEICULO & " | Transportadora " & TRANSPORTADORA & " | Remessas: " & (UBound(REMESSAS) + 1)
     resumo = ""
     For i = 0 To UBound(REMESSAS)
         tmp = REMESSAS(i)
         resumo = resumo & "  " & (i + 1) & ") OV " & tmp(0) & " - " & tmp(7) & " - " & tmp(6) & " pallets" & vbCrLf
     Next
-    r = MsgBox("Carga recebida do painel - serao criadas " & (UBound(REMESSAS) + 1) & " remessa(s) no SAP:" & vbCrLf & vbCrLf & resumo & vbCrLf & "Veiculo: " & VEICULO & vbCrLf & "Transportadora: " & TRANSPORTADORA & vbCrLf & vbCrLf & "O SAP precisa estar aberto e logado. Continuar?", vbYesNo + vbQuestion + vbSystemModal, TITULO)
+    r = MsgBox("Carga recebida do painel - serao criadas " & (UBound(REMESSAS) + 1) & " remessa(s) no SAP:" & vbCrLf & vbCrLf & resumo & vbCrLf & "Veiculo: " & VEICULO & vbCrLf & "Transportadora: " & TRANSPORTADORA & vbCrLf & IIf26(CRIAR_DOC_TRANSPORTE And SEGUIR_0003, vbCrLf & "Depois do transporte: ZTTM0003 (Picking/MES, Mov. Estoque, Agr. Veiculo) com o cavalo " & PV("CAVALO") & " - " & PV("MOTORISTA") & vbCrLf, "") & vbCrLf & "O SAP precisa estar aberto e logado. Continuar?", vbYesNo + vbQuestion + vbSystemModal, TITULO)
     If r <> vbYes Then
         Registrar "Cancelado pelo operador antes de iniciar."
         Exit Sub
@@ -3273,6 +3275,23 @@ Sub ProcessarCarga()
             Exit Sub
         End If
     End If
+    ' Continua na ZTTM0003 (Picking/MES -> Mov. Estoque -> Agr. Veiculo) com o veiculo do painel
+    expRes = ""
+    If CRIAR_DOC_TRANSPORTE And SEGUIR_0003 Then
+        If DOC_TRANSPORTE_CRIADO = "" Then
+            expRes = "ZTTM0003 NAO executada: o numero do documento de transporte nao foi lido. Faca a expedicao manualmente."
+        Else
+            PORT("DOC") = DOC_TRANSPORTE_CRIADO
+            DIAS26 = 3
+            If IsNumeric(PV("DIAS")) Then DIAS26 = CInt(PV("DIAS"))
+            Registrar "Expedicao ZTTM0003 - transporte " & PV("DOC") & " | cavalo " & PV("CAVALO") & " | motorista " & PV("MOTORISTA")
+            expRes = ExpedicaoPassos()
+            If Err.Number <> 0 Then
+                Abortar "Remessas e documento de transporte " & DOC_TRANSPORTE_CRIADO & " CRIADOS (numero copiado para a area de transferencia)." & vbCrLf & "A expedicao na ZTTM0003 parou na etapa '" & etapaAtual & "': " & Err.Description
+                Exit Sub
+            End If
+        End If
+    End If
     On Error GoTo 0
     final = "CONCLUIDO" & vbCrLf & vbCrLf
     For i = 0 To UBound(REMESSAS)
@@ -3283,6 +3302,8 @@ Sub ProcessarCarga()
             final = final & "OV " & tmp(0) & "  ->  gravada (numero: veja o SAP/log)" & vbCrLf
         End If
     Next
+    If DOC_TRANSPORTE_CRIADO <> "" Then final = final & vbCrLf & "Documento de transporte: " & DOC_TRANSPORTE_CRIADO & " (copiado para a area de transferencia)" & vbCrLf
+    If expRes <> "" Then final = final & vbCrLf & expRes & vbCrLf
     Registrar "Fim - concluido"
     MsgBox final, vbInformation + vbSystemModal, TITULO
 End Sub
@@ -4083,7 +4104,7 @@ ProcessarArquivo arqEnt
     const sp=((cfg.sap&&cfg.sap.shippingPoints)||['BR3R','RISC']).filter(Boolean);
     const batch=(cfg.sap&&cfg.sap.batchAG)||'';
     const clientes=uniq(payload.ordens.map(o=>String(o.clienteCodigo||'').trim()).filter(Boolean)); const cliente=clientes.length===1?clientes[0]:'';
-    const L=['H|VERSAO|'+this.DADOS_VERSAO,'H|ID|'+c(opts.id||''),'H|MODO_CONFERENCIA|'+(opts.conferencia!==false?'1':'0'),'H|CRIAR_DOC|'+(opts.docTransporte?'1':'0'),
+    const L=['H|VERSAO|'+(opts.expedicao&&opts.veic0003?20:this.DADOS_VERSAO),'H|ID|'+c(opts.id||''),'H|MODO_CONFERENCIA|'+(opts.conferencia!==false?'1':'0'),'H|CRIAR_DOC|'+(opts.docTransporte?'1':'0'),
       'H|VEICULO|'+c(payload.veiculo.codigo),'H|TRANSPORTADORA|'+c(payload.transportadora.codigo),'H|CLIENTE|'+c(cliente),'H|LOCAIS|'+sp.map(c).join(';'),
       'H|TRANSP_NOME|'+c(payload.transportadora.nome||''),'H|VEIC_DESC|'+c(payload.veiculo.descricao||''),'H|VEIC_CAP|'+c(payload.veiculo.capacidadePallets||''),'H|CONF_VISUAL|'+(opts.visual!==false?'1':'0')];
     payload.ordens.forEach(o=>{
@@ -4093,6 +4114,8 @@ ProcessarArquivo arqEnt
       latas.slice(1).forEach(l=>L.push(['L',c(l.material),c(l.quantidadeSAP),c(l.descricao),c((l.lote&&l.lote!=='')?l.lote:((o.origem==='AG/NSA')?batch:''))].join('|')));
       emb.forEach(l=>L.push(['E',c(l.material),c(l.quantidadeSAP),c(l.deposito),c(l.descricao),c(l.unidade)].join('|')));
     });
+    if(opts.docTransporte&&opts.expedicao&&opts.veic0003){ const v=opts.veic0003;
+      L.push('H|SEGUIR_0003|1','H|P_LOCAL|'+c(v.local),'H|P_DATA|'+c(v.data),'H|P_DIAS|3','H|P_CAVALO|'+c(v.cavalo),'H|P_MOTORISTA|'+c(v.motorista)); }
     L.push('FIM');
     return {ok:true,text:L.join('\r\n')+'\r\n',problems:[]};
   },
@@ -5112,7 +5135,7 @@ function doPrepare(){
    Um clique: o painel abre br3r://run?d=<dados da carga>; o FaturamentoSAP.vbs (instalado uma vez
    com dois cliques) recebe os dados, mostra o resumo para confirmar e roda no SAP. */
 const SapDirect={
-  ctx:null, RUNNER_VERSAO:19,
+  ctx:null, RUNNER_VERSAO:20,
   b64url(t){return btoa(unescape(encodeURIComponent(t))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');},
   async update(){
     const _u=$('btnUpd'); if(_u){_u.disabled=true;setTimeout(()=>{_u.disabled=false;},6000);}
@@ -5131,7 +5154,8 @@ const SapDirect={
   send(){
     const c=this.ctx; if(!c)return; const _b=$('rnSend'); if(_b){_b.disabled=true;setTimeout(()=>{_b.disabled=false;},6000);}
     const id=('carga_'+c.payload.veiculo.codigo+'_'+c.stamp+'_'+Math.random().toString(36).slice(2,6)).replace(/[^A-Za-z0-9_-]/g,'');
-    const d=SapScript.buildData(c.payload,S.cfg,Object.assign({},c.st,{id}));
+    const opt=Object.assign({},c.st,{id}); if(opt.expedicao) opt.veic0003=gkVeiculo0003(); /* veículo atual do painel GK */
+    const d=SapScript.buildData(c.payload,S.cfg,opt);
     if(!d.ok){alert(d.problems.join('\n'));return;}
     const url='br3r://run?d='+this.b64url(d.text);
     if(url.length<=1900){ this.open(url); }
@@ -5195,11 +5219,22 @@ const SapFolder={
   }
 };
 
+/* Veículo para a ZTTM0003: os campos do painel GK (se preenchidos) ou o último da lista. */
+function gkVeiculo0003(){
+  const dt=$('gkData')&&$('gkData').value?$('gkData').value:gkDataPadrao();
+  const base={local:($('gkLocal')&&$('gkLocal').value)||gkLocalPadrao(), data:dt.split('-').reverse().join('.')};
+  const cav=($('gkCavalo')&&$('gkCavalo').value||'').trim().toUpperCase().replace(/[^A-Z0-9]/g,'');
+  if($('gkFields')&&$('gkFields').style.display!=='none'&&gkPlaca(cav)) return Object.assign(base,{cavalo:cav,motorista:($('gkMotorista').value||'').trim().toUpperCase(),origem:'campos do painel'});
+  const l=gkLoadList().filter(x=>gkPlaca(x.cavalo||String(x.placas||'').split(' / ')[0]));
+  if(l.length){ const x=l[l.length-1]; return Object.assign(base,{cavalo:x.cavalo||String(x.placas).split(' / ')[0],motorista:x.motorista||'',origem:'último da lista'}); }
+  return null;
+}
 /* ------------------------------ script SAP (VBS) ------------------------------ */
 function renderSapBox(payload,stamp){
   const box=$('sapBox');if(!box)return;
   const naoAG=payload.ordens.filter(o=>S.cfg.stock.agOrderTypes.map(normText).indexOf(normText(o.tipoOrdem))<0);
-  const st=S.sapOpts||(S.sapOpts={conferencia:true,docTransporte:true,visual:true}); if(st.visual===undefined)st.visual=true;
+  const st=S.sapOpts||(S.sapOpts={conferencia:true,docTransporte:true,visual:true,expedicao:true}); if(st.visual===undefined)st.visual=true; if(st.expedicao===undefined)st.expedicao=true;
+  const v03=gkVeiculo0003(); st.veic0003=v03;
   if(naoAG.length)st.conferencia=true;
   const probs=SapScript.check(payload,{docTransporte:st.docTransporte});
   const g=probs.length?null:SapScript.build(payload,S.cfg,st);
@@ -5211,10 +5246,12 @@ function renderSapBox(payload,stamp){
    <label class="small" style="display:flex;gap:6px;align-items:center;margin:6px 0"><input type="checkbox" id="optConf" ${st.conferencia?'checked':''} ${naoAG.length?'disabled':''}> Pedir confirmação antes de gravar cada remessa <b>(recomendado)</b></label>
    <label class="small" style="display:flex;gap:6px;align-items:center;margin:6px 0"><input type="checkbox" id="optVis" ${st.visual?'checked':''}> Mostrar a <b>janela de conferência</b> com sinais verdes (SKU, transportadora, veículo, local…) <span style="opacity:.75">— desmarque para usar o pop-up simples</span></label>
    <label class="small" style="display:flex;gap:6px;align-items:center;margin:6px 0"><input type="checkbox" id="optDoc" ${st.docTransporte?'checked':''}> Criar o documento de transporte (ZTTM0000) ao final${nR>8?' — máx. 8 remessas':''}</label>
+   <label class="small" style="display:flex;gap:6px;align-items:center;margin:6px 0 6px 22px;${st.docTransporte?'':'opacity:.5'}"><input type="checkbox" id="optExp" ${st.expedicao&&v03?'checked':''} ${st.docTransporte&&v03?'':'disabled'}> Depois do transporte, seguir na <b>ZTTM0003</b> (Picking/MES → Mov. Estoque → Agr. Veículo) ${v03?`com o cavalo <b>${esc(v03.cavalo)}</b>${v03.motorista?' — '+esc(v03.motorista):''} <span style="opacity:.75">(${esc(v03.origem)}; local ${esc(v03.local)})</span>`:'<span style="color:var(--amber)">— preencha o veículo no painel “Documento de transporte &amp; dados do GK” (placa do cavalo)</span>'}</label>
    ${g?`${lint.length?`<div class="msg bad">Verificação estrutural com problemas: ${esc(lint.join('; '))}</div>`:''}
    <div id="runnerBox"></div>`:''}`;
   const rebuild=()=>renderSapBox(payload,stamp);
-  const oc=$('optConf'),od=$('optDoc'),ov2=$('optVis');
+  const oc=$('optConf'),od=$('optDoc'),ov2=$('optVis'),oe=$('optExp');
+  if(oe)oe.onchange=()=>{S.sapOpts.expedicao=oe.checked;rebuild();};
   if(ov2)ov2.onchange=()=>{S.sapOpts.visual=ov2.checked;rebuild();};
   if(oc)oc.onchange=()=>{S.sapOpts.conferencia=oc.checked;rebuild();};
   if(od)od.onchange=()=>{S.sapOpts.docTransporte=od.checked;rebuild();};
