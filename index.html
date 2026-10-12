@@ -453,8 +453,8 @@ pre.json{background:#0c0d10;color:#cdd0da;padding:14px;border-radius:var(--rc);o
 .gkListWrap{overflow:auto;border:1px solid var(--line);border-radius:var(--rc)}
 .gkTable{display:none}
 .gkEmpty{padding:14px;text-align:center;color:var(--muted);font-size:14px}
-.gkDel{border:0;background:transparent;color:var(--red,#93372c);cursor:pointer;font-weight:700;font-size:15px}
-.gkDel:hover{opacity:.7}
+.gkOps{white-space:nowrap;text-align:right}
+.gkOps .btn{margin-left:6px}
 .gkActions{display:flex;gap:10px}
 .gkShot{border:1px solid var(--line);border-radius:var(--rc);padding:8px;background:var(--paper-2);max-height:260px;overflow:auto}
 .gkShot img{max-width:100%;height:auto;display:block}
@@ -616,6 +616,7 @@ td .badge:has(.lgo){padding:3px 11px;font-size:14px;font-weight:700;border:1px s
     <div class="gkRow">
       <button class="btn btn-clear" id="btnGkParse">Processar dados</button>
       <button class="btn" id="btnGkAdd">+ Adicionar à lista</button>
+      <button class="btn" id="btnGkCancel" type="button" style="display:none">Cancelar edição</button>
       <button class="btn" id="btnGkShot" type="button" title="Escolher a imagem do print do e-mail do AG">Anexar print (AG)</button>
       <input type="file" id="gkShotFile" accept="image/*" hidden>
       <span class="gkParseMsg" id="gkParseMsg"></span>
@@ -4760,11 +4761,14 @@ function gkParseBlock(raw){
     cliente: (groups[3]||[])[0]||''
   };
 }
-/* Destino no assunto do e-mail do AG: "01-CARREGAMENTO-12-10-2026-LEONARDO BARRETO GOMES- AB MACACU" */
-function gkDestinoAssunto(raw){
-  const m=String(raw||'').match(/CARREGAMENTO\s*-\s*\d{1,2}\s*-\s*\d{1,2}\s*-\s*\d{2,4}\s*-[^\n-]+-\s*([^\n]+)/i);
-  return m?m[1].replace(/\s+-\s+Mensagem.*$/i,'').replace(/[|]/g,'').trim().toUpperCase():'';
+/* Assunto do e-mail do AG: "01-CARREGAMENTO-12-10-2026-LEONARDO BARRETO GOMES- AB MACACU" → motorista e destino */
+function gkAssunto(raw){
+  const m=String(raw||'').toUpperCase().match(/CARREGAMENTO\s*-\s*\d{1,2}\s*-\s*\d{1,2}\s*-\s*\d{2,4}\s*-([^\n-]+)-\s*([^\n]+)/);
+  if(!m) return {motorista:'',destino:''};
+  return {motorista:m[1].replace(/[^A-ZÀ-Ú ]/g,' ').replace(/\s+/g,' ').trim(),
+    destino:m[2].replace(/\s+-\s+MENSAGEM.*$/,'').replace(/[|\[\]{}]/g,'').replace(/\s+/g,' ').trim()};
 }
+function gkDestinoAssunto(raw){ return gkAssunto(raw).destino; }
 /* Formato "Campo: valor" (gerado ao colar a tabela do e-mail ou ao ler um print). */
 const GK_KV={NOME:'motorista',MOTORISTA:'motorista','PLACA CAVALO':'cavalo',CAVALO:'cavalo','PLACA CARRETA 1':'bau1','PLACA BAU 1':'bau1','PLACA CARRETA 2':'bau2','PLACA BAU 2':'bau2',
   UF:'uf',TIPO:'tipo',CPF:'cpf',TRANSPORTADORA:'transportadora',DESTINO:'cliente',CLIENTE:'cliente',ORIGEM:'origem'};
@@ -4781,21 +4785,33 @@ function gkParseKv(raw){
   return {origem:o.origem||'AG (e-mail)', placas, uf:GK_UFS.indexOf(uf)>=0?uf:'', tipo:o.tipo||'', transportadora:(o.transportadora||'').toUpperCase(),
     motorista:(o.motorista||'').toUpperCase(), cpf:(o.cpf||'').replace(/\D/g,''), cliente:(o.cliente||'').toUpperCase()};
 }
-/* Texto livre (linha da tabela do e-mail lida de um print ou colada com tabs):
-   NOME | PLACA CAVALO | PLACA CARRETA 1 | PLACA CARRETA 2 | CPF | TRANSPORTADORA */
+/* Texto livre (linha da tabela do e-mail colada com tabs ou lida de um print):
+   NOME | PLACA CAVALO | PLACA CARRETA 1 | PLACA CARRETA 2 | CPF | TRANSPORTADORA.
+   O leitor de imagem às vezes quebra as células em linhas separadas: então procura no texto todo. */
 const GK_PLACA_RE=/\b([A-Z]{3}[- ]?[0-9][A-Z0-9][0-9]{2})\b/g;
+const GK_PLACA_1=/\b[A-Z]{3}[- ]?[0-9][A-Z0-9][0-9]{2}\b/;
+const GK_CPF_RE=/\b\d{3}[.,]?\d{3}[.,]?\d{3}[-.,]?\d{2}\b/;
+const GK_HEAD_RE=/PLACA|CAVALO|CARRETA|TRANSPORTADORA|^\s*NOME\b|\bCPF\b/;
 function gkParseLinha(raw){
-  const lines=String(raw||'').toUpperCase().replace(/\r/g,'').split('\n');
-  const L=lines.find(l=>!/PLACA|CAVALO|CARRETA/.test(l)&&(l.match(GK_PLACA_RE)||[]).length>=1&&/[A-Z]{3,}\s+[A-Z]{2,}/.test(l.replace(GK_PLACA_RE,'')));
-  if(!L) return null;
-  const clean=L.replace(/[|\[\]{}]/g,' ').replace(/\t/g,'  ');
-  const ms=[...clean.matchAll(GK_PLACA_RE)];
-  const placas=ms.map(m=>m[1].replace(/[- ]/g,''));
-  const nome=clean.slice(0,ms[0].index).replace(/[^A-ZÀ-Ú ]/g,' ').replace(/\s+/g,' ').trim();
-  const cpfM=clean.match(/\d{3}\.?\d{3}\.?\d{3}-?\d{2}/);
-  const resto=cpfM?clean.slice(cpfM.index+cpfM[0].length):clean.slice(ms[ms.length-1].index+ms[ms.length-1][0].length);
-  return {origem:'AG (e-mail)', placas, uf:'', transportadora:resto.replace(/\s+/g,' ').trim(), motorista:nome,
-    cpf:cpfM?cpfM[0].replace(/\D/g,''):'', cliente:gkDestinoAssunto(raw)};
+  const asn=gkAssunto(raw);
+  const lines=String(raw||'').toUpperCase().replace(/\r/g,'').split('\n')
+    .map(l=>l.replace(/[|\[\]{}“”"'‘’_=~]/g,' ').replace(/\t/g,'  ').replace(/[ ]{3,}/g,'  ').trim())
+    .filter(l=>l&&!/CARREGAMENTO\s*-/.test(l));
+  const body=lines.filter(l=>!GK_HEAD_RE.test(l));
+  const placas=[]; let pLine=-1, firstIdx=-1;
+  body.forEach((l,i)=>{ for(const m of l.matchAll(GK_PLACA_RE)){ const pl=m[1].replace(/[- ]/g,''); if(placas.indexOf(pl)<0){ placas.push(pl); if(pLine<0){pLine=i;firstIdx=m.index;} } } });
+  if(!placas.length) return null;
+  let cpf='', cpfLine=-1, cpfEnd=0;
+  body.some((l,i)=>{ const m=l.match(GK_CPF_RE); if(m){ cpf=m[0].replace(/\D/g,''); cpfLine=i; cpfEnd=m.index+m[0].length; return true; } return false; });
+  const soLetras=t=>t.replace(/[^A-ZÀ-Ú ]/g,' ').replace(/\s+/g,' ').trim();
+  let nome=soLetras(body[pLine].slice(0,firstIdx));
+  if(nome.split(' ').length<2){ const c=body.find(l=>!GK_PLACA_1.test(l)&&!GK_CPF_RE.test(l)&&/^[A-ZÀ-Ú]{2,}( [A-ZÀ-Ú]{2,}){1,5}$/.test(soLetras(l))&&soLetras(l)===l.replace(/\s+/g,' ').trim()); nome=c?soLetras(c):''; }
+  if(!nome&&asn.motorista) nome=asn.motorista;
+  let transp='';
+  if(cpfLine>=0){ transp=soLetras(body[cpfLine].slice(cpfEnd)); if(!transp&&body[cpfLine+1]&&!GK_PLACA_1.test(body[cpfLine+1])) transp=soLetras(body[cpfLine+1]); }
+  if(!transp){ const l=body[pLine]; const ms=[...l.matchAll(GK_PLACA_RE)]; const last=ms[ms.length-1]; transp=soLetras(l.slice(last.index+last[0].length)); }
+  return {origem:'AG (e-mail)', placas:placas.slice(0,3), uf:'', transportadora:transp.split(' ').slice(0,4).join(' '), motorista:nome,
+    cpf, cliente:asn.destino};
 }
 /* Escolhe o formato: "Campo: valor" → linha de tabela (e-mail do AG) → bloco do GK. */
 function gkParseAny(raw){
@@ -4834,15 +4850,54 @@ function gkLoadOcr(){
     s.onload=()=>ok(window.Tesseract); s.onerror=()=>{ gkOcrLib=null; ko(new Error('sem acesso à biblioteca de leitura de imagem')); }; document.head.appendChild(s); });
   return gkOcrLib;
 }
+/* Prepara o print para o leitor: amplia, passa para preto e branco e apaga as linhas da tabela
+   (bordas atrapalham muito a leitura). */
+function gkPrepImage(file){
+  return new Promise((ok,ko)=>{
+    const img=new Image(); const url=URL.createObjectURL(file);
+    img.onerror=()=>ko(new Error('imagem inválida'));
+    img.onload=()=>{
+      const sc=Math.max(1,Math.min(3,3000/Math.max(img.width,1)));
+      const W=Math.round(img.width*sc), H=Math.round(img.height*sc);
+      const cv=document.createElement('canvas'); cv.width=W; cv.height=H;
+      const cx=cv.getContext('2d'); cx.imageSmoothingQuality='high'; cx.drawImage(img,0,0,W,H);
+      const id=cx.getImageData(0,0,W,H), px=id.data, g=new Uint8Array(W*H), hist=new Array(256).fill(0);
+      let sum=0;
+      for(let i=0;i<W*H;i++){ const v=(px[i*4]*299+px[i*4+1]*587+px[i*4+2]*114)/1000|0; g[i]=v; hist[v]++; sum+=v; }
+      if(sum/(W*H)<110){ for(let i=0;i<W*H;i++) g[i]=255-g[i]; hist.fill(0); for(let i=0;i<W*H;i++) hist[g[i]]++; } /* tema escuro */
+      let tot=W*H, sB=0, wB=0, best=0, th=128, sAll=0; for(let t=0;t<256;t++) sAll+=t*hist[t];
+      for(let t=0;t<256;t++){ wB+=hist[t]; if(!wB) continue; const wF=tot-wB; if(!wF) break; sB+=t*hist[t];
+        const mB=sB/wB, mF=(sAll-sB)/wF, v=wB*wF*(mB-mF)*(mB-mF); if(v>best){best=v;th=t;} }
+      const dark=new Uint8Array(W*H); for(let i=0;i<W*H;i++) dark[i]=g[i]<=th?1:0;
+      const runH=Math.max(50*sc,W*0.06), runV=26*sc;
+      for(let y=0;y<H;y++){ let x=0; while(x<W){ if(!dark[y*W+x]){x++;continue;} let e=x; while(e<W&&dark[y*W+e]) e++; if(e-x>=runH) for(let k=x;k<e;k++) dark[y*W+k]=2; x=e; } }
+      for(let x=0;x<W;x++){ let y=0; while(y<H){ if(!dark[y*W+x]){y++;continue;} let e=y; while(e<H&&dark[e*W+x]) e++; if(e-y>=runV) for(let k=y;k<e;k++) dark[k*W+x]=2; y=e; } }
+      for(let i=0;i<W*H;i++){ const v=dark[i]===1?0:255; px[i*4]=px[i*4+1]=px[i*4+2]=v; px[i*4+3]=255; }
+      cx.putImageData(id,0,0); URL.revokeObjectURL(url); ok(cv);
+    };
+    img.src=url;
+  });
+}
 async function gkOcr(file, onDone){
   const url=URL.createObjectURL(file);
   $('gkShotImg').src=url; $('gkShot').style.display='flex';
-  $('gkParseMsg').textContent='Lendo o print… (pode levar alguns segundos)';
+  $('gkParseMsg').textContent='Lendo o print… (pode levar alguns segundos; na primeira vez baixa o leitor)';
   try{
     const T=await gkLoadOcr();
-    const res=await T.recognize(file,'por');
-    const d=gkParseAny(res.data.text);
-    if(!d.placas.length){ $('gkParseMsg').textContent='Não reconheci placas no print. Copie a tabela do e-mail (selecione e Ctrl+C) e cole aqui, ou digite os dados.'; return; }
+    const cv=await gkPrepImage(file);
+    const w=await T.createWorker('por');
+    let d=null;
+    try{
+      for(const psm of ['6','4','11']){
+        await w.setParameters({tessedit_pageseg_mode:psm, preserve_interword_spaces:'1'});
+        const res=await w.recognize(cv);
+        gkOcrTexto=res.data.text;
+        const x=gkParseLinha(res.data.text);
+        if(x&&(!d||(x.placas.length+(x.cpf?1:0)+(x.motorista?1:0))>(d.placas.length+(d.cpf?1:0)+(d.motorista?1:0)))) d=x;
+        if(d&&d.placas.length>=2&&d.cpf&&d.motorista&&d.transportadora) break;
+      }
+    } finally { w.terminate(); }
+    if(!d||!d.placas.length){ $('gkParseMsg').textContent='Não reconheci placas no print. Copie a tabela do e-mail (selecione e Ctrl+C) e cole aqui, ou digite os dados.'; return; }
     $('gkPaste').value=gkToKv(d);
     onDone();
     $('gkParseMsg').textContent+=' Lido a partir do print — confira as placas e o CPF com a imagem.';
@@ -4850,6 +4905,7 @@ async function gkOcr(file, onDone){
     $('gkParseMsg').textContent='Não consegui ler o print ('+e.message+'). Copie a tabela do e-mail (selecione e Ctrl+C) e cole aqui.';
   }
 }
+let gkOcrTexto='';
 /* Tipo sugerido: o veículo escolhido na montagem da carga, se combinar com o nº de placas;
    carreta (2 placas) -> Z9; bitrem (3 placas) fica para o conferente escolher (S3 ou S6). */
 function gkSuggestTipo(nPlacas){
@@ -4904,17 +4960,41 @@ function gkReadForm(){
   r.placas=[r.cavalo,r.bau1,r.bau2].filter(Boolean).join(' / ');
   return {r,err};
 }
+let gkEditIdx=null;
+function gkSetAddLabel(){ const b=$('btnGkAdd'); b.textContent=gkEditIdx==null?'+ Adicionar à lista':'✔ Salvar alteração'; $('btnGkCancel').style.display=gkEditIdx==null?'none':''; }
+function gkResetForm(msg){
+  $('gkDoc').value=''; $('gkPaste').value=''; $('gkFields').style.display='none'; $('gkShot').style.display='none';
+  $('btnGkAdd').classList.remove('green'); gkLast=null; gkEditIdx=null; gkSetAddLabel();
+  if(msg!=null) $('gkParseMsg').textContent=msg;
+}
+function gkEdit(i){
+  const r=gkLoadList()[i]; if(!r) return;
+  const p=r.cavalo!=null?[r.cavalo,r.bau1,r.bau2]:String(r.placas||'').split(' / ');
+  gkRenderFields({origem:r.origem||'GK', placas:p.filter(Boolean), uf:r.uf||'', tipo:r.tipo||'', transportadora:r.transportadora||'', motorista:r.motorista||'', cpf:r.cpf||'', cliente:r.cliente||''});
+  $('gkCavalo').value=p[0]||''; $('gkBau1').value=p[1]||''; $('gkBau2').value=p[2]||'';
+  $('gkUf').value=r.uf||''; $('gkTipo').value=r.tipo||'';
+  $('gkDoc').value=r.doc||''; $('gkPaste').value=''; $('gkShot').style.display='none';
+  gkEditIdx=i; gkSetAddLabel();
+  $('gkParseMsg').textContent='Editando o documento '+(r.doc||'')+' — altere os campos e clique em "Salvar alteração".';
+  $('secGK').scrollIntoView({behavior:'smooth',block:'start'});
+}
 function gkRenderTable(){
   const list=gkLoadList();
   const tb=$('gkTableBody'); if(!tb) return;
-  tb.innerHTML=list.map((r,i)=>'<tr>'
+  tb.innerHTML=list.map((r,i)=>'<tr'+(i===gkEditIdx?' style="background:var(--accent-tint)"':'')+'>'
     +'<td>'+esc(r.doc||'')+'</td><td>'+esc(r.placas||'')+'</td><td>'+esc(r.uf||'')+'</td><td>'+esc(r.tipo||'')+'</td><td>'+esc(r.transportadora||'')+'</td>'
     +'<td>'+esc(r.motorista||'')+'</td><td>'+esc(r.cpf||'')+'</td><td>'+esc(r.cliente||'')+'</td>'
-    +'<td><button type="button" class="gkDel" data-i="'+i+'" title="Remover">✕</button></td></tr>').join('');
+    +'<td class="gkOps"><button type="button" class="btn sm gkEdit" data-i="'+i+'" title="Editar este lançamento">✎ Editar</button>'
+    +'<button type="button" class="btn sm danger gkDel" data-i="'+i+'" title="Excluir este lançamento">✕ Excluir</button></td></tr>').join('');
   $('gkEmpty').style.display = list.length ? 'none' : 'block';
   $('gkTable').style.display = list.length ? 'table' : 'none';
+  tb.querySelectorAll('.gkEdit').forEach(b=>{ b.onclick=()=>{ gkEdit(Number(b.dataset.i)); gkRenderTable(); }; });
   tb.querySelectorAll('.gkDel').forEach(b=>{ b.onclick=()=>{
-    const arr=gkLoadList(); arr.splice(Number(b.dataset.i),1); gkSaveList(arr); gkRenderTable();
+    const i=Number(b.dataset.i); const arr=gkLoadList(); const r=arr[i]; if(!r) return;
+    if(!confirm('Excluir o lançamento '+(r.doc||'(sem documento)')+' — '+(r.placas||'')+' — '+(r.motorista||'')+'?')) return;
+    arr.splice(i,1); gkSaveList(arr);
+    if(gkEditIdx===i) gkResetForm('Lançamento excluído.'); else if(gkEditIdx!=null&&gkEditIdx>i){ gkEditIdx--; }
+    gkRenderTable();
   };});
 }
 function gkInit(){
@@ -4949,17 +5029,19 @@ function gkInit(){
   pasteBox.addEventListener('input',()=>{ $('btnGkAdd').classList.remove('green'); $('gkShot').style.display='none'; });
   $('btnGkParse').onclick=()=>{ if(!parse()) $('gkParseMsg').textContent='Cole os dados do GK antes de processar.'; };
   $('btnGkAdd').onclick=()=>{
-    if($('gkFields').style.display==='none'&&!parse()){ $('gkParseMsg').textContent='Cole os dados do GK antes de adicionar.'; return; }
+    if($('gkFields').style.display==='none'&&!parse()){ $('gkParseMsg').textContent='Cole os dados do GK ou do e-mail do AG antes de adicionar.'; return; }
     const {r,err}=gkReadForm();
-    if(err.length){ $('gkParseMsg').textContent='Corrija antes de adicionar: '+err.join('; ')+'.'; return; }
+    if(err.length){ $('gkParseMsg').textContent='Corrija antes de '+(gkEditIdx==null?'adicionar':'salvar')+': '+err.join('; ')+'.'; return; }
     const list=gkLoadList();
+    if(gkEditIdx!=null&&list[gkEditIdx]){
+      list[gkEditIdx]=Object.assign({},list[gkEditIdx],r);
+      gkSaveList(list); gkResetForm('Alteração salva.'); gkRenderTable(); return;
+    }
     if(list.some(x=>x.doc===r.doc)&&!confirm('O documento '+r.doc+' já está na lista. Adicionar de novo?')) return;
     list.push(r);
-    gkSaveList(list); gkRenderTable();
-    $('gkDoc').value=''; $('gkPaste').value=''; $('gkFields').style.display='none'; $('gkShot').style.display='none';
-    $('btnGkAdd').classList.remove('green'); gkLast=null;
-    $('gkParseMsg').textContent='Adicionado à lista.';
+    gkSaveList(list); gkResetForm('Adicionado à lista.'); gkRenderTable();
   };
+  $('btnGkCancel').onclick=()=>{ gkResetForm('Edição cancelada.'); gkRenderTable(); };
   $('btnGkCopy').onclick=()=>{
     const list=gkLoadList();
     const head=['Origem','Documento','Placa cavalo','Placa baú 1','Placa baú 2','UF','Tipo','Transportadora','Motorista','CPF','Destino'].join('\t');
