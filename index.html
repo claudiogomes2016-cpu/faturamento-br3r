@@ -620,6 +620,7 @@ td .badge:has(.lgo){padding:3px 11px;font-size:14px;font-weight:700;border:1px s
       <button class="btn" id="btnGkAdd">+ Adicionar à lista</button>
       <button class="btn" id="btnGkCancel" type="button" style="display:none">Cancelar edição</button>
       <button class="btn green" id="btnGkSap" type="button" style="display:none" title="Procura o veículo na ZTTM0026 (placa do cavalo ou motorista); se não estiver cadastrado, cadastra; depois dá ENTRADA">🚚 Portaria SAP (ZTTM0026)</button>
+      <button class="btn green" id="btnGkExp" type="button" style="display:none" title="ZTTM0003: acha o documento de transporte e faz Picking/MES, Mov. Estoque e Agr. Veículo (pergunta antes de cada etapa)">🚛 Expedição SAP (ZTTM0003)</button>
       <button class="btn danger" id="btnGkClearForm" type="button" style="display:none" title="Descarta o que foi colado (texto ou print) e limpa os campos">✕ Limpar</button>
       <button class="btn" id="btnGkShot" type="button" title="Escolher a imagem do print do e-mail do AG">Anexar print (AG)</button>
       <input type="file" id="gkShotFile" accept="image/*" hidden>
@@ -2860,9 +2861,10 @@ MsgBox final, vbInformation + vbSystemModal, TITULO
     }
     return {ok:true,code:VV.replace(/\r?\n/g,'\r\n'),problems:[]};
   },
-  RUNNER_VERSAO:17,
+  RUNNER_VERSAO:18,
   DADOS_VERSAO:14,
   PORTARIA_VERSAO:17,
+  EXPEDICAO_VERSAO:18,
   localName(origem){const o=String(origem||''); if(/AG/i.test(o))return 'NSA'; if(/0707/.test(o))return 'TRANSF. 0700'; return 'BALL';},
   handlerMain(BS){ return `' ------------------------------- FaturamentoSAP (atalho br3r://) -------------------------------
 ' Um clique em ENVIAR AO SAP no painel abre este script com os dados da carga.
@@ -2970,6 +2972,13 @@ Sub CarregarDados(caminho)
     ts.Close
     If temAtual Then FecharRemessa dR, dE, dL, atual
     If verArq > RUNNER_VERSAO Then Err.Raise vbObjectError + 532, "FaturamentoSAP", "O painel e mais novo que o FaturamentoSAP instalado neste computador. Baixe o instalador de novo no painel e de dois cliques nele."
+    If ACAO = "EXPEDICAO" Then
+        If Not fim Then Err.Raise vbObjectError + 533, "FaturamentoSAP", "Dados da expedicao incompletos (sem a linha FIM)."
+        If PV("DOC") = "" Then Err.Raise vbObjectError + 539, "FaturamentoSAP", "Dados da expedicao sem o documento de transporte."
+        If PV("CAVALO") = "" Then Err.Raise vbObjectError + 537, "FaturamentoSAP", "Dados da expedicao sem a placa do cavalo."
+        If PV("LOCAL") = "" Then Err.Raise vbObjectError + 538, "FaturamentoSAP", "Dados da expedicao sem o local (BR3R/RISC)."
+        Exit Sub
+    End If
     If ACAO = "PORTARIA" Then
         If Not fim Then Err.Raise vbObjectError + 533, "FaturamentoSAP", "Dados da portaria incompletos (sem a linha FIM)."
         If PV("CAVALO") = "" Then Err.Raise vbObjectError + 537, "FaturamentoSAP", "Dados da portaria sem a placa do cavalo."
@@ -3678,6 +3687,222 @@ Sub ProcessarPortaria()
     MsgBox final, vbInformation + vbSystemModal, TITULO
 End Sub
 
+' ------------------------------- EXPEDICAO: ZTTM0003 (Picking/MES -> Mov. Estoque -> Agr. Veiculo) -------------------------------
+' Base: gravacao do SAP GUI Scripting (carreta): filtro TKNUM -> Picking/MES (+OK) -> Mov. Estoque -> Agr. Veiculo
+' (placa do cavalo -> lista: escolher o veiculo -> OK, OK). Os botoes sao achados pelo NOME na barra (nao pela posicao).
+Const P_G03 = "wnd[0]/usr/cntlGRID1/shellcont/shell"
+Const P_CNFA_TBL = "wnd[1]/usr/ssubRAHMEN:SAPLCNFA:0111/subALLE_FELDER:SAPLCNFA:0130/tblSAPLCNFATC_ALLE_FELDER"
+Const P_CNFA_SEL = "wnd[1]/usr/ssubRAHMEN:SAPLCNFA:0111/subAUSWAHL:SAPLCNFA:0140/btnAUSWAEHLEN"
+
+Sub Abrir03()
+    Etapa "abrir ZTTM0003"
+    session.findById("wnd[0]/tbar[0]/okcd").text = "/NZTTM0003"
+    session.findById("wnd[0]").sendVKey 0
+    Etapa "selecao: local " & PV("LOCAL") & ", data a partir de " & Data26()
+    session.findById("wnd[0]/usr/ctxtP_TPLST").text = PV("LOCAL")
+    session.findById("wnd[0]/usr/ctxtS_DATA-LOW").text = Data26()
+    session.findById("wnd[0]/tbar[1]/btn[8]").press
+    SemPopup "executar ZTTM0003"
+    If Not Existe(P_G03) Then Err.Raise vbObjectError + 621, "Expedicao", "A ZTTM0003 nao mostrou a lista de transportes (" & TextoDe("wnd[0]/sbar") & ")."
+End Sub
+
+' Linha do documento de transporte na grade (coluna TKNUM); seleciona a linha. -1 = nao achou.
+Function Transporte03()
+    Dim g, n, r, alvo
+    Set g = session.findById(P_G03)
+    n = g.RowCount
+    alvo = SemZeros(PV("DOC"))
+    Transporte03 = -1
+    For r = 0 To n - 1
+        If SemZeros(Cel26(g, r, "TKNUM")) = alvo Then
+            Transporte03 = r
+            Exit For
+        End If
+    Next
+    If Transporte03 >= 0 Then
+        g.currentCellColumn = "TKNUM"
+        g.selectedRows = CStr(Transporte03)
+    End If
+End Function
+
+Function Status03(r)
+    Dim g, c
+    Set g = session.findById(P_G03)
+    c = Colunas26(g, "STATUS")
+    Status03 = ""
+    If UBound(c) >= 0 Then Status03 = Cel26(g, r, c(0))
+End Function
+
+Function Placa03(r)
+    Dim g
+    Set g = session.findById(P_G03)
+    Placa03 = PlacasDaLinha(g, r, Colunas26(g, "PLACA"))
+    If Placa03 = "" Then Placa03 = Cel26(g, r, "VEICULO")
+End Function
+
+' Botao da barra da ZTTM0003 pelo texto (ex.: "AGR VEICULO"). Erro se nao existir.
+Function Botao03(txt)
+    Dim b, t, achado
+    Set achado = Nothing
+    On Error Resume Next
+    For Each b In session.findById("wnd[0]/tbar[1]").Children
+        t = ""
+        t = SoAlnum(b.Text & " " & b.Tooltip, True)
+        If InStr(t, txt) > 0 Then
+            Set achado = b
+            Exit For
+        End If
+    Next
+    Err.Clear
+    On Error GoTo 0
+    If achado Is Nothing Then Err.Raise vbObjectError + 622, "Expedicao", "Nao achei o botao '" & txt & "' na barra da ZTTM0003."
+    Set Botao03 = achado
+End Function
+
+' Janelas que o SAP abre depois de um botao: mostra o texto (modo conferencia) e confirma com OK.
+Sub Popups03(etapa)
+    Dim k, txt, r
+    For k = 1 To 3
+        If Not Existe("wnd[1]/tbar[0]/btn[0]") Then Exit Sub
+        txt = TextoJanela("wnd[1]")
+        Registrar "      Janela apos " & etapa & ": " & session.findById("wnd[1]").Text & " - " & txt
+        If MODO_CONFERENCIA Then
+            r = MsgBox("O SAP abriu a janela '" & session.findById("wnd[1]").Text & "' apos " & etapa & ":" & vbCrLf & vbCrLf & txt & vbCrLf & vbCrLf & "SIM = confirmar (OK)" & vbCrLf & "NAO = parar (a janela fica aberta no SAP)", vbYesNo + vbQuestion + vbSystemModal, TITULO)
+            If r <> vbYes Then Err.Raise vbObjectError + 623, "Expedicao", "Parado pelo operador na janela apos " & etapa & "."
+        End If
+        session.findById("wnd[1]/tbar[0]/btn[0]").press
+    Next
+End Sub
+
+' Pergunta antes de cada etapa: SIM = executar, NAO = pular, CANCELAR = parar.
+Function Perguntar03(etapa, linha)
+    Dim r
+    Perguntar03 = True
+    If Not MODO_CONFERENCIA Then Exit Function
+    r = MsgBox("Transporte " & PV("DOC") & " - status atual: " & Status03(linha) & vbCrLf & vbCrLf & "Executar " & etapa & "?" & vbCrLf & vbCrLf & "SIM = executar" & vbCrLf & "NAO = pular esta etapa" & vbCrLf & "CANCELAR = parar", vbYesNoCancel + vbQuestion + vbSystemModal, TITULO)
+    If r = vbCancel Then Err.Raise vbObjectError + 624, "Expedicao", "Parado pelo operador antes de " & etapa & "."
+    Perguntar03 = (r = vbYes)
+End Function
+
+Function Linha03()
+    Linha03 = Transporte03()
+    If Linha03 < 0 Then Err.Raise vbObjectError + 625, "Expedicao", "O transporte " & PV("DOC") & " nao aparece na ZTTM0003 (local " & PV("LOCAL") & ", desde " & Data26() & "). Confira o numero e a data 'Cadastros desde' no painel."
+End Function
+
+' Lista de veiculos (janela de selecao): escolhe a linha com a placa do cavalo; uma linha so = ela; senao pergunta.
+Sub EscolherVeiculo03()
+    Dim tbl, n, r, c, t, linhas, txt, achou, qtd, s, alvo
+    Set tbl = session.findById(P_CNFA_TBL)
+    alvo = SoAlnum(PV("CAVALO"), False)
+    n = 0
+    On Error Resume Next
+    n = tbl.RowCount
+    Err.Clear
+    On Error GoTo 0
+    If n > 30 Then n = 30
+    achou = -1
+    qtd = 0
+    txt = ""
+    For r = 0 To n - 1
+        t = ""
+        On Error Resume Next
+        For c = 0 To tbl.Columns.Count - 1
+            t = t & " " & Trim(tbl.GetCell(r, c).Text)
+        Next
+        Err.Clear
+        On Error GoTo 0
+        t = Trim(t)
+        If t <> "" Then
+            qtd = qtd + 1
+            txt = txt & "  " & r & ") " & t & vbCrLf
+            If achou < 0 And InStr(SoAlnum(t, False), alvo) > 0 Then achou = r
+        End If
+    Next
+    Registrar "      Lista de veiculos (" & qtd & "): " & Replace(txt, vbCrLf, " | ")
+    If achou < 0 And qtd <= 1 Then achou = 0
+    If achou < 0 Then
+        s = InputBox("A lista do Agr. Veiculo tem mais de uma opcao e nenhuma com a placa " & PV("CAVALO") & ":" & vbCrLf & vbCrLf & txt & vbCrLf & "Digite o numero da linha do veiculo (vazio = parar):", TITULO)
+        s = Trim(s)
+        If s = "" Or Not IsNumeric(s) Then Err.Raise vbObjectError + 626, "Expedicao", "Parado pelo operador na lista de veiculos."
+        achou = CLng(s)
+    End If
+    Registrar "      Veiculo escolhido: linha " & achou
+    tbl.getAbsoluteRow(achou).selected = True
+    session.findById(P_CNFA_SEL).press
+End Sub
+
+Sub AgregarVeiculo03(linha)
+    Dim k
+    Etapa "Agr. Veiculo (placa do cavalo " & PV("CAVALO") & ")"
+    Botao03("AGR VEICULO").press
+    If Not Existe("wnd[1]/usr/txtSPOP-VARVALUE1") Then Err.Raise vbObjectError + 627, "Expedicao", "A janela do Agr. Veiculo (placa) nao abriu como na gravacao. " & TextoDe("wnd[0]/sbar")
+    session.findById("wnd[1]/usr/txtSPOP-VARVALUE1").text = PV("CAVALO")
+    session.findById("wnd[1]/tbar[0]/btn[0]").press
+    If Existe(P_CNFA_TBL) Then EscolherVeiculo03
+    For k = 1 To 3
+        If Not Existe("wnd[1]/tbar[0]/btn[0]") Then Exit For
+        Registrar "      Confirmacao do Agr. Veiculo: " & session.findById("wnd[1]").Text & " - " & TextoJanela("wnd[1]")
+        session.findById("wnd[1]/tbar[0]/btn[0]").press
+    Next
+    SemPopup "Agr. Veiculo"
+End Sub
+
+Function ExpedicaoPassos()
+    Dim linha, st0, st, placa
+    ovAtual = "(expedicao " & PV("DOC") & ")"
+    Abrir03
+    linha = Linha03()
+    st0 = Status03(linha)
+    Registrar "    Transporte " & PV("DOC") & " na linha " & linha & " - status: " & st0
+    If Perguntar03("PICKING/MES", linha) Then
+        Etapa "Picking/MES"
+        Botao03("PICKING").press
+        Popups03 "Picking/MES"
+        SemPopup "Picking/MES"
+    End If
+    linha = Linha03()
+    If Perguntar03("MOV. ESTOQUE", linha) Then
+        Etapa "Mov. Estoque"
+        Botao03("MOV ESTOQUE").press
+        Popups03 "Mov. Estoque"
+        SemPopup "Mov. Estoque"
+    End If
+    linha = Linha03()
+    If Perguntar03("AGR. VEICULO (placa " & PV("CAVALO") & ")", linha) Then AgregarVeiculo03 linha
+    Abrir03
+    linha = Linha03()
+    st = Status03(linha)
+    placa = Placa03(linha)
+    Registrar "    Depois: status " & st & " | placa " & placa
+    ExpedicaoPassos = "ZTTM0003 - transporte " & PV("DOC") & vbCrLf & vbCrLf & "Status antes: " & st0 & vbCrLf & "Status agora: " & st & vbCrLf & "Placa no transporte: " & placa & vbCrLf & vbCrLf & "Proximo passo (manual por enquanto): Faturar, aguardar a SEFAZ, DANFe e Transporte."
+End Function
+
+Sub ProcessarExpedicao()
+    Dim r, final
+    DIAS26 = 3
+    If IsNumeric(PV("DIAS")) Then DIAS26 = CInt(PV("DIAS"))
+    Registrar "Expedicao ZTTM0003 - transporte " & PV("DOC") & " | cavalo " & PV("CAVALO") & " | motorista " & PV("MOTORISTA")
+    r = MsgBox("EXPEDICAO - ZTTM0003" & vbCrLf & vbCrLf & "Transporte: " & PV("DOC") & vbCrLf & "Placa do cavalo: " & PV("CAVALO") & "   Motorista: " & PV("MOTORISTA") & vbCrLf & "Local: " & PV("LOCAL") & "   Desde: " & Data26() & vbCrLf & vbCrLf & "Etapas: Picking/MES -> Mov. Estoque -> Agr. Veiculo (pergunto antes de cada uma)." & vbCrLf & vbCrLf & "O SAP precisa estar aberto e logado. Continuar?", vbYesNo + vbQuestion + vbSystemModal, TITULO)
+    If r <> vbYes Then
+        Registrar "Cancelado pelo operador antes de iniciar."
+        Exit Sub
+    End If
+    On Error Resume Next
+    Conectar
+    If Err.Number <> 0 Then
+        Abortar "Nao foi possivel conectar ao SAP GUI. Abra o SAP, faca login e habilite o Scripting. Detalhe: " & Err.Description
+        Exit Sub
+    End If
+    final = ExpedicaoPassos()
+    If Err.Number <> 0 Then
+        Abortar "Expedicao interrompida na etapa '" & etapaAtual & "': " & Err.Description
+        Exit Sub
+    End If
+    On Error GoTo 0
+    Registrar "Fim - " & Replace(final, vbCrLf, " | ")
+    MsgBox final, vbInformation + vbSystemModal, TITULO
+End Sub
+
 Sub ProcessarArquivo(arqCarga)
     Dim dest, nomeArq, ok, msgErr
     nomeArq = fso.GetFileName(arqCarga)
@@ -3711,6 +3936,8 @@ Sub ProcessarArquivo(arqCarga)
     If ok Then
         If ACAO = "PORTARIA" Then
             ProcessarPortaria
+        ElseIf ACAO = "EXPEDICAO" Then
+            ProcessarExpedicao
         Else
             ProcessarCarga
         End If
@@ -3807,6 +4034,15 @@ ProcessarArquivo arqEnt
       'H|P_FINALIDADE|'+c(v.finalidade||'C'),'H|P_CAVALO|'+c(v.cavalo),'H|P_CARRETA1|'+c(v.bau1),'H|P_CARRETA2|'+c(v.bau2),'H|P_UF|'+c(v.uf),'H|P_TIPO|'+c(v.tipo),
       'H|P_TRANSP|'+c(v.transportadora),'H|P_MOTORISTA|'+c(v.motorista),'H|P_CPF|'+c(v.cpf),'H|P_DESTINO|'+c(v.cliente),'FIM'];
     return L.join('\r\n')+'\r\n';
+  },
+  /* Dados da expedição (ZTTM0003): Picking/MES → Mov. Estoque → Agr. Veículo do documento de transporte */
+  buildExpedicao(v,cfg,opts){
+    opts=opts||{};
+    const c=x=>String(x==null?'':x).normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^\x20-\x7E]/g,'?').replace(/[|\r\n]/g,'/').trim().toUpperCase();
+    const sp=((cfg.sap&&cfg.sap.shippingPoints)||['BR3R']).filter(Boolean);
+    return ['H|VERSAO|'+this.EXPEDICAO_VERSAO,'H|ACAO|EXPEDICAO','H|ID|'+c(opts.id||''),'H|MODO_CONFERENCIA|'+(opts.conferencia!==false?'1':'0'),
+      'H|P_LOCAL|'+c(opts.local||sp[0]||'BR3R'),'H|P_DATA|'+c(opts.data||''),'H|P_DIAS|'+(opts.dias||3),
+      'H|P_DOC|'+c(v.doc),'H|P_CAVALO|'+c(v.cavalo),'H|P_MOTORISTA|'+c(v.motorista),'FIM'].join('\r\n')+'\r\n';
   },
   /* Arquivo de dados da carga (o que o painel grava na pasta 'entrada') */
   buildData(payload,cfg,opts){
@@ -4844,7 +5080,7 @@ function doPrepare(){
    Um clique: o painel abre br3r://run?d=<dados da carga>; o FaturamentoSAP.vbs (instalado uma vez
    com dois cliques) recebe os dados, mostra o resumo para confirmar e roda no SAP. */
 const SapDirect={
-  ctx:null, RUNNER_VERSAO:17,
+  ctx:null, RUNNER_VERSAO:18,
   b64url(t){return btoa(unescape(encodeURIComponent(t))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');},
   async update(){
     const _u=$('btnUpd'); if(_u){_u.disabled=true;setTimeout(()=>{_u.disabled=false;},6000);}
@@ -5450,6 +5686,7 @@ function gkRenderFields(d){
   $('btnGkAdd').classList.add('green');
   $('btnGkClearForm').style.display='';
   $('btnGkSap').style.display='';
+  $('btnGkExp').style.display='';
   gkLast=d;
   /* AG (e-mail ou print) é sempre Coleta = C; no GK vem na 1a linha */
   $('gkFinal').value=d.origem&&d.origem!=='GK'?'C':(d.finalidade||'C').toUpperCase();
@@ -5496,7 +5733,7 @@ function gkSetAddLabel(){ const b=$('btnGkAdd'); b.textContent=gkEditIdx==null?'
 function gkResetForm(msg){
   $('gkDoc').value=''; $('gkPaste').value=''; $('gkFields').style.display='none'; $('gkShot').style.display='none';
   ['gkFinal','gkCavalo','gkBau1','gkBau2','gkUf','gkTipo','gkTransp','gkMotorista','gkCpf','gkCliente','gkData'].forEach(id=>{ $(id).value=''; });
-  $('btnGkAdd').classList.remove('green'); $('btnGkClearForm').style.display='none'; $('btnGkSap').style.display='none'; gkLast=null; gkEditIdx=null; gkSetAddLabel();
+  $('btnGkAdd').classList.remove('green'); $('btnGkClearForm').style.display='none'; $('btnGkSap').style.display='none'; $('btnGkExp').style.display='none'; gkLast=null; gkEditIdx=null; gkSetAddLabel();
   if(msg!=null) $('gkParseMsg').textContent=msg;
 }
 function gkEdit(i){
@@ -5574,11 +5811,29 @@ function gkInit(){
     gkSaveList(list); gkResetForm('Adicionado à lista.'); gkRenderTable();
   };
   $('btnGkCancel').onclick=()=>{ gkResetForm('Edição cancelada.'); gkRenderTable(); };
+  /* Expedição: documento de transporte + placa do cavalo → ZTTM0003 (Picking/MES, Mov. Estoque, Agr. Veículo) */
+  $('btnGkExp').onclick=()=>{
+    const {r}=gkReadForm(); const e=[];
+    if(!r.doc) e.push('cole o documento de transporte'); if(!gkPlaca(r.cavalo)) e.push('placa do cavalo inválida');
+    const local=$('gkLocal').value, dt=$('gkData').value; if(!local||!dt) e.push('escolha o local e a data "Cadastros desde"');
+    if(e.length){ $('gkParseMsg').textContent='Corrija antes de enviar à ZTTM0003: '+e.join('; ')+'.'; return; }
+    const b=$('btnGkExp'); b.disabled=true; setTimeout(()=>{b.disabled=false;},6000);
+    try{ localStorage.setItem(GK_LOCAL_KEY,local); }catch(x){}
+    const id=('expedicao_'+r.doc+'_'+Date.now().toString(36)).replace(/[^A-Za-z0-9_-]/g,'');
+    const txt=SapScript.buildExpedicao(r,S.cfg,{id,local,data:dt.split('-').reverse().join('.')});
+    const url='br3r://run?d='+SapDirect.b64url(txt);
+    if(url.length<=1900) SapDirect.open(url);
+    else { download(id+'.dat',txt,'text/plain'); setTimeout(()=>SapDirect.open('br3r://run?f='+encodeURIComponent(id+'.dat')),1500); }
+    $('gkParseMsg').innerHTML='<b>Enviado à ZTTM0003</b> (transporte '+esc(r.doc)+', cavalo '+esc(r.cavalo)+'). Confirme o pop-up <b>“Faturamento BR3R”</b>. '
+      +'Se aparecer <b>“O painel é mais novo…”</b>, <a href="#" id="gkInst2">baixe o instalador</a> e dê dois cliques nele.';
+    const a=$('gkInst2'); if(a) a.onclick=ev=>{ ev.preventDefault(); SapDirect.install(); $('gkParseMsg').textContent='Instalador baixado: dê dois cliques em FaturamentoSAP.vbs (pasta Downloads) e clique de novo em Expedição SAP.'; };
+  };
   /* Portaria: manda os dados ao FaturamentoSAP (atalho br3r://) — ZTTM0026: busca, cadastro se faltar, entrada. */
   $('btnGkSap').onclick=()=>{
     const {r,err}=gkReadForm(); const e2=err.filter(x=>!/documento de transporte/.test(x));
     if(e2.length){ $('gkParseMsg').textContent='Corrija antes de enviar ao SAP: '+e2.join('; ')+'.'; return; }
     const b=$('btnGkSap'); b.disabled=true; setTimeout(()=>{b.disabled=false;},6000);
+    /* portaria */
     const id=('portaria_'+r.cavalo+'_'+Date.now().toString(36)).replace(/[^A-Za-z0-9_-]/g,'');
     const local=$('gkLocal').value, dt=$('gkData').value;
     if(!local||!dt){ $('gkParseMsg').textContent='Escolha o local (BR3R/RISC) e a data "Cadastros desde" antes de enviar ao SAP.'; b.disabled=false; return; }
